@@ -149,6 +149,26 @@
 
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: grid; place-items: center; z-index: 10; }
   .dialog { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; width: min(440px, 92vw); max-height: calc(100dvh - 36px); overflow: auto; box-shadow: 0 18px 56px #1b2b4430; display: flex; flex-direction: column; gap: 10px; }
+  .action-dialog { width: min(600px, calc(100vw - 32px)); padding: 24px; gap: 16px; }
+  .action-dialog .actions { margin-top: 2px; }
+  .action-path { display: grid; gap: 4px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .action-path code { color: var(--ink); }
+  .action-code { margin: 0; max-height: min(35vh, 320px); overflow: auto; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--sidebar); color: var(--ink); font: 12px/1.65 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+  .execution-card { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); white-space: normal; }
+  .execution-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 12px; font-size: 13px; }
+  .execution-status { color: var(--muted); font-size: 12px; }
+  .execution-status.success { color: #216343; }
+  .execution-status.failure { color: #9b2727; }
+  .execution-card .action-code { margin-top: 8px; }
+  .tool[aria-pressed="true"] { color: var(--accent-ink); background: var(--selection); }
+  .approval-picker { position: relative; }
+  .approval-picker summary { list-style: none; cursor: pointer; white-space: nowrap; }
+  .approval-picker summary::-webkit-details-marker { display: none; }
+  .approval-picker summary.full { color: #985000; }
+  .approval-options { width: min(305px, calc(100vw - 64px)); }
+  .approval-options button { min-height: 46px; }
+  .approval-options button:last-child .workspace-label { color: #985000; }
+  .toolbar { flex-wrap: wrap; }
   .dialog h2 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
   .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); }
   .field[hidden] { display: none; }
@@ -195,6 +215,8 @@ const state = {
   expandedProjects: new Set(),
   conversationId: null,
   view: "chat",
+  creator: false,
+  approvalMode: "ask",
   switching: false,
   busy: false,
   ready: false,
@@ -268,6 +290,7 @@ function build() {
         message.textContent = bubble.content;
       }
       if (bubble.collaboration) message.append(teamTrace(bubble.collaboration));
+      for (const execution of bubble.executions ?? []) message.append(executionCard(execution));
       thread.append(message);
     }
     if (state.progress) thread.append(el("div", { class: "bubble progress" }, state.progress));
@@ -543,6 +566,35 @@ function workspacePicker() {
   return picker;
 }
 
+const approvalModes = [
+  { id: "ask", label: "请求批准", description: "需要确认的操作逐次询问" },
+  { id: "assist", label: "帮我批准", description: "自动打开常用应用和工作区项目，脚本和改动仍需确认" },
+  { id: "full", label: "完全访问权限", description: "现有工具无需弹窗，脚本以当前 Windows 用户权限运行" },
+];
+
+function approvalPicker() {
+  const current = approvalModes.find(({ id }) => id === state.approvalMode);
+  const summary = el("summary", {
+    class: `tool ${current.id === "full" ? "full" : ""}`,
+    "aria-label": `批准权限：${current.label}`, title: current.description,
+  }, current.label);
+  const options = approvalModes.map(({ id, label, description }) => el("button", {
+    class: "workspace-option", type: "button", "aria-current": String(id === current.id),
+    onclick: () => { state.approvalMode = id; picker.open = false; render(); document.getElementById("approval-picker")?.querySelector("summary")?.focus(); },
+  }, id === current.id ? icon("check") : el("span", { "aria-hidden": "true" }),
+    el("span", {}, el("span", { class: "workspace-label" }, label), el("span", { class: "workspace-path" }, description))));
+  const picker = el("details", { class: "approval-picker", id: "approval-picker" }, summary,
+    el("div", { class: "workspace-options approval-options" }, ...options));
+  summary.addEventListener("click", (event) => { if (state.busy || state.switching) event.preventDefault(); });
+  picker.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !picker.open) return;
+    event.preventDefault();
+    picker.open = false;
+    summary.focus();
+  });
+  return picker;
+}
+
 function composer() {
   if (state.archived) return el("div", { class: "composer-box archived-banner" },
     el("span", {}, "此会话已归档"),
@@ -575,8 +627,14 @@ function composer() {
     render();
   });
 
+  const creator = team ? null : el("button", {
+    type: "button", class: "tool", "aria-pressed": String(state.creator),
+    title: "在独立的 Arrodes 源码项目中审阅并应用改动",
+    onclick: () => { state.creator = !state.creator; render(); document.getElementById("input")?.focus(); },
+  }, state.creator ? "创造模式已开启" : "创造模式");
+  if (creator) creator.disabled = state.busy;
   const box = el("div", { class: "composer-box" }, textarea,
-    el("div", { class: "toolbar" }, workspacePicker(), openFolder, sendButton));
+    el("div", { class: "toolbar" }, workspacePicker(), openFolder, ...(creator ? [creator] : []), approvalPicker(), sendButton));
   return box;
 }
 
@@ -588,7 +646,7 @@ async function send() {
     openSettings();
     return;
   }
-  const mode = state.view === "collaboration" ? "team" : "chat";
+  const mode = state.view === "collaboration" ? "team" : state.creator ? "creator" : "chat";
   state.busy = true;
   state.draft = "";
   state.progress = null;
@@ -598,7 +656,7 @@ async function send() {
 
   let result;
   try {
-    result = await window.arrodes.send({ text, mode });
+    result = await window.arrodes.send({ text, mode, approvalMode: state.approvalMode });
     if (result.kind !== "need_config" && result.kind !== "unavailable") {
       state.sessions = await window.arrodes.listConversations().catch(() => state.sessions);
     }
@@ -617,7 +675,7 @@ async function send() {
     return;
   }
 
-  state.history.push({ role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration });
+  state.history.push({ role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration, executions: result.executions });
   state.busy = false;
   state.progress = null;
   render();
@@ -790,6 +848,51 @@ function field(label, input) {
   return el("label", { class: "field" }, el("span", {}, label), input);
 }
 
+function executionCard({ ok, cancelled, exitCode, output }) {
+  const status = cancelled ? "已取消" : ok ? "执行成功" : "执行失败";
+  const label = exitCode == null ? status : `${status} · 退出码 ${exitCode}`;
+  return el("section", { class: "execution-card", "aria-label": "PowerShell 执行结果" },
+    el("div", { class: "execution-head" },
+      el("strong", {}, "PowerShell"),
+      el("span", { class: `execution-status ${cancelled ? "" : ok ? "success" : "failure"}` }, label)),
+    output ? el("pre", { class: "action-code", tabindex: "0" }, output) : el("span", { class: "hint" }, "无输出"));
+}
+
+let approvalDialog;
+window.arrodes.onApproval(({ id, action, detail, cwd, script }) => {
+  const dialog = el("dialog", { class: "dialog role-dialog action-dialog", "aria-labelledby": "approval-title" });
+  approvalDialog = { id, dialog };
+  const respond = async (approved) => {
+    for (const button of dialog.querySelectorAll("button")) button.disabled = true;
+    try { await window.arrodes.approve({ id, approved }); }
+    finally { if (dialog.open) dialog.close(); }
+  };
+  const cancel = el("button", { type: "button", class: "ghost", onclick: () => respond(false) }, "取消");
+  const confirm = el("button", { type: "button", class: "send", onclick: () => respond(true) },
+    script ? "运行脚本" : action === "应用源码修改" ? "应用改动" : "允许本次");
+  dialog.append(el("h2", { id: "approval-title" }, action));
+  if (script) {
+    dialog.append(el("div", { class: "action-path" }, el("span", {}, "工作目录"), el("code", {}, cwd)),
+      el("pre", { class: "action-code", tabindex: "0" }, script),
+      el("p", { class: "hint" }, "脚本以当前 Windows 用户权限运行，可访问工作区以外的文件和网络。"));
+  } else {
+    dialog.append(el("pre", { class: "action-code", tabindex: "0" }, detail));
+  }
+  dialog.append(el("div", { class: "actions" }, cancel, confirm));
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); respond(false); });
+  dialog.addEventListener("close", () => {
+    if (approvalDialog?.id === id) approvalDialog = null;
+    dialog.remove();
+  }, { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  cancel.focus();
+});
+
+window.arrodes.onApprovalClosed((id) => {
+  if (approvalDialog?.id === id) approvalDialog.dialog.close();
+});
+
 window.arrodes.onProgress((payload) => {
   state.progress = payload.line;
   const thread = document.getElementById("thread");
@@ -802,8 +905,10 @@ window.arrodes.onCanvasEvent(({ conversationId, event }) => {
 });
 
 document.addEventListener("click", (event) => {
-  const picker = document.getElementById("workspace-picker");
-  if (picker?.open && !picker.contains(event.target)) picker.open = false;
+  for (const id of ["workspace-picker", "approval-picker"]) {
+    const picker = document.getElementById(id);
+    if (picker?.open && !picker.contains(event.target)) picker.open = false;
+  }
 });
 
 Promise.all([

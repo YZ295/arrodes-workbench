@@ -10,6 +10,10 @@ const { _electron } = require('playwright-core');
 const source = resolve(__dirname, '..');
 const binary = process.env.ARRODES_TEST_EXE;
 const workspaceName = '验收工作区';
+const powershellTask = '用 PowerShell 检查本机版本';
+const browserTask = '打开默认浏览器';
+const searchTask = '在 GitHub 搜索 unpdf 的公开仓库';
+const spreadsheetTask = '生成一份验收用 Excel 表格';
 const task = '在工作区新建 math.js，实现 add(a,b) 并检查语法';
 const fileText = 'function add(a, b) { return a + b; }\n';
 const questions = ['你好', '你的工作区在哪里', '帮我看看这个', '先不做了'];
@@ -168,6 +172,35 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
       let message = teamReply(messages, tools);
       if (message) {
         // The local provider implements the team protocol deterministically.
+      } else if (latest === powershellTask) {
+        assert.ok(tools.some((tool) => tool.function.name === 'run_powershell'));
+        if (results.length) {
+          const result = JSON.parse(results.at(-1).content);
+          assert.equal(result.exitCode, 0, result.output);
+          assert.match(result.output, /PowerShell [0-9]+\.[0-9]+/);
+        }
+        message = results.length ? assistant('已读取 PowerShell 版本。')
+          : toolCall('run_powershell', { script: 'Write-Output ("PowerShell " + $PSVersionTable.PSVersion)' });
+      } else if (latest === browserTask) {
+        assert.ok(tools.some((tool) => tool.function.name === 'open_desktop'));
+        if (results.length) assert.equal(JSON.parse(results.at(-1).content).ok, true);
+        message = results.length ? assistant('已请求打开浏览器。')
+          : toolCall('open_desktop', { target: 'browser' });
+      } else if (latest === searchTask) {
+        assert.ok(tools.some((tool) => tool.function.name === 'search_github'));
+        if (results.length) {
+          const result = JSON.parse(results.at(-1).content);
+          assert.ok(result.ok, result.output);
+          assert.match(result.output, /unjs\/unpdf/);
+        }
+        message = results.length ? assistant('找到 unjs/unpdf。')
+          : toolCall('search_github', { query: 'unpdf in:name', limit: 3 });
+      } else if (latest === spreadsheetTask) {
+        assert.match(messages[0].content, /表格与数据分析/);
+        assert.ok(tools.some((tool) => tool.function.name === 'export_xlsx'));
+        if (results.length) assert.equal(JSON.parse(results.at(-1).content).ok, true);
+        message = results.length ? assistant('已生成 report.xlsx。')
+          : toolCall('export_xlsx', { path: 'report.xlsx', rows: [['金额'], [42]] });
       } else if (latest === task && results.length < 2) {
         const name = results.length === 0 ? 'write_file' : 'check_syntax';
         assert.ok(tools.some((tool) => tool.function.name === name));
@@ -623,6 +656,57 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await archivePage.getByRole('button', { name: '恢复会话', exact: true }).click();
     await archivePage.locator('#input').waitFor();
     await archivePage.locator(`[id="recent-${current.id}"]`).waitFor();
+    await send(archivePage, spreadsheetTask, '已生成 report.xlsx。');
+    const path = await archivePage.evaluate(() => window.arrodes.getConversation().then(({ workspaceId }) =>
+      window.arrodes.listWorkspaces().then((items) => items.find(({ id }) => id === workspaceId)?.path)));
+    assert.equal((await readFile(join(path, 'report.xlsx'))).subarray(0, 2).toString(), 'PK');
+    if (process.env.ARRODES_LIVE_SEARCH === '1') {
+      await send(archivePage, searchTask, '找到 unjs/unpdf。');
+      console.log('Electron 实际调用 GitHub 搜索并把结果回传模型');
+    }
+    await app.evaluate(({ shell }) => {
+      globalThis.__desktopLaunches = [];
+      shell.openExternal = async (url) => { globalThis.__desktopLaunches.push(url); };
+    });
+    const confirmation = archivePage.getByRole('dialog', { name: '打开 Windows 应用' });
+    const browserRun = send(archivePage, browserTask, '已请求打开浏览器。');
+    await confirmation.getByText('默认浏览器', { exact: false }).waitFor();
+    await confirmation.getByRole('button', { name: '允许本次' }).click();
+    await browserRun;
+    assert.deepEqual(await app.evaluate(() => globalThis.__desktopLaunches), ['https://www.bing.com/']);
+    const shellRun = send(archivePage, powershellTask, '已读取 PowerShell 版本。');
+    const approval = archivePage.getByRole('dialog', { name: '运行 PowerShell' });
+    await approval.getByText('工作目录', { exact: true }).waitFor();
+    assert.match(await approval.locator('pre').textContent(), /Write-Output/);
+    if (process.env.ARRODES_APPROVAL_SCREENSHOT) await approval.screenshot({ path: process.env.ARRODES_APPROVAL_SCREENSHOT });
+    await approval.getByRole('button', { name: '运行脚本' }).click();
+    await shellRun;
+    const card = archivePage.getByRole('region', { name: 'PowerShell 执行结果' }).last();
+    assert.match(await card.textContent(), /执行成功 · 退出码 0/);
+    assert.match(await card.locator('pre').textContent(), /PowerShell [0-9]+\.[0-9]+/);
+    if (process.env.ARRODES_RESULT_SCREENSHOT) await card.screenshot({ path: process.env.ARRODES_RESULT_SCREENSHOT });
+    const chooseApproval = async (current, next) => {
+      await archivePage.getByLabel(`批准权限：${current}`, { exact: true }).click();
+      await archivePage.locator('#approval-picker').getByRole('button', { name: new RegExp(next) }).click();
+    };
+    await chooseApproval('请求批准', '帮我批准');
+    await send(archivePage, browserTask, '已请求打开浏览器。');
+    assert.equal(await confirmation.count(), 0);
+    const reviewedShell = send(archivePage, powershellTask, '已读取 PowerShell 版本。');
+    await approval.getByRole('button', { name: '运行脚本' }).click();
+    await reviewedShell;
+    await chooseApproval('帮我批准', '完全访问权限');
+    await send(archivePage, powershellTask, '已读取 PowerShell 版本。');
+    assert.equal(await approval.count(), 0);
+    await archivePage.getByRole('region', { name: 'PowerShell 执行结果' }).nth(2).waitFor();
+    await chooseApproval('完全访问权限', '请求批准');
+    const creatorToggle = archivePage.getByRole('button', { name: '创造模式', exact: true });
+    await creatorToggle.click();
+    await archivePage.locator('#input').fill('修改 Arrodes');
+    await archivePage.getByRole('button', { name: '发送', exact: true }).click();
+    await archivePage.getByRole('alert').filter({ hasText: '独立的 Arrodes Git 源码副本' }).waitFor();
+    console.log('新确认界面、PowerShell 结果卡和创造模式工作区校验通过');
+    console.log('内置 Skill 已注入，Electron 主进程生成真实 XLSX');
     console.log('会话归档、历史保留、重启及恢复通过');
     console.log('画布连接、角色 Skill 注入与隔离、真实交接、文件和重启恢复通过');
   } finally {

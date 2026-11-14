@@ -26,5 +26,8 @@ contextBridge.exposeInMainWorld("arrodes", {
   archiveConversation: (id, archived) => ipcRenderer.invoke("chat:archive", id, archived),
   newConversation: (workspaceName) => ipcRenderer.invoke("chat:new", workspaceName),
   send: (payload) => ipcRenderer.invoke("chat:send", payload),
+  approve: (payload) => ipcRenderer.invoke("chat:approve", payload),
+  onApproval: (callback) => ipcRenderer.on("chat:approval", (_event, payload) => callback(payload)),
+  onApprovalClosed: (callback) => ipcRenderer.on("chat:approval-closed", (_event, id) => callback(id)),
   onProgress: (callback) => ipcRenderer.on("chat:progress", (_event, payload) => callback(payload)),
 });

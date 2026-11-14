@@ -1,12 +1,13 @@
+import { FILE_WRITING_TOOLS } from "./basic-tools.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { APP_CAPABILITY_BOUNDARIES, requestModel, runAgentTurn, safePath, verifyWorkspaceFile, WORKSPACE_TOOL_NAMES } from "./loop.mjs";
+import { APP_CAPABILITY_BOUNDARIES, describeTurnTools, requestModel, runAgentTurn, safePath, verifyWorkspaceFile, READ_TOOL_NAMES, WORKSPACE_TOOL_NAMES } from "./loop.mjs";
 import { applyCanvasDependencies, validateCanvas } from "./team-canvas.mjs";
 import { skillInstructions, TEAM_COORDINATION_SKILL } from "./team-skills.mjs";
 
 const bundle = new URL("./collab-runtime.mjs", import.meta.url);
 const runtimeModule = existsSync(bundle) ? bundle : new URL("../../apps/server/dist/collab/runtime.js", import.meta.url);
-const readTools = ["list_dir", "read_file"];
+const readTools = READ_TOOL_NAMES;
 const toolsByAccess = { read: readTools, write: WORKSPACE_TOOL_NAMES };
 const roles = {
   coordinator: { name: "协调者", description: "分析目标、分工、处理协助请求并汇总结果。", tools: readTools },
@@ -22,7 +23,7 @@ export function getTeamRoles(customRoles = []) {
 
 async function ask(config, stage, instructions, input, skills = []) {
   const { message, error } = await requestModel(config, [
-    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillInstructions(skills)}` },
+    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillInstructions(skills)}\n${describeTurnTools([])}\n团队的调研和执行角色可以按关键词搜索网页或 GitHub 公开仓库，并读取网页核实。用户要查找资料时，可分配调研任务，requiredInputs 和 outputs 可为空，不要求用户先给链接。桌面启动可由读写执行角色申请用户确认。` },
     { role: "user", content: input },
   ]);
   if (error) throw new Error(error);
@@ -123,7 +124,7 @@ function describeEvent(event, labels) {
   }
 }
 
-export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [] }) {
+export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult }) {
   const catalog = getTeamRoles(customRoles);
   let graph;
   try {
@@ -247,13 +248,13 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
     reportSkills(roleId, task.taskId);
     const result = await runAgentTurn({
       text: JSON.stringify({ goal: text, assignment: task.deliverable, requiredInputs: original.requiredInputs, outputs: original.outputs, acceptance: original.acceptance, upstream, assist: requests.get(task.assistFor) }),
-      history: [], workspaceDir, config, onProgress,
+      history: [], workspaceDir, config, onProgress, approveAction, openItem, launchDesktop, onToolResult,
       collaboration: {
         stage, instructions: `角色：${profile.name}\n职责：${profile.description}\n只完成分给你的子任务，使用交接材料。返回实际交付与依据；缺必要信息时请求协助。${skillInstructions(skillsOf(roleId))}`,
         tools: task.assistFor ? readTools : toolsByAccess[profile.access],
         onAssist: task.assistFor ? undefined : (request) => { requests.set(task.taskId, request); requestAssist(request); },
         onToolResult: (tool, { path }, outcome) => {
-          if (tool !== "write_file") return;
+          if (!FILE_WRITING_TOOLS.has(tool)) return;
           if (outcome.ok) { files.add(path); failedWrites.delete(path); }
           else failedWrites.add(path);
         },

@@ -1,3 +1,6 @@
+import { approveOperation } from "./agent/approval-policy.mjs";
+import { isArrodesSource } from "./agent/creator-mode.mjs";
+import { launchWindowsDesktop } from "./agent/desktop-launch.mjs";
 import { app, BrowserWindow, dialog, Menu, ipcMain, net, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -9,7 +12,7 @@ import { listAvailableModels, resolveModelConnection, testModelConnection } from
 import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
 import { createTeamRoleStore } from "./agent/team-roles.mjs";
 import { createTeamCanvasStore } from "./agent/team-canvas.mjs";
-import { createTeamSkillStore, validateSkillIds } from "./agent/team-skills.mjs";
+import { createTeamSkillStore, validateSkillIds, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
 import { fetchGithubSkill } from "./agent/github-skills.mjs";
 import { createWorkspaceStore, existingDirectory } from "./agent/workspaces.mjs";
 
@@ -286,7 +289,33 @@ ipcMain.handle("chat:new", (_event, workspaceId) => {
   return conversation;
 });
 
-ipcMain.handle("chat:send", async (_event, { text, mode }) => {
+const pendingApprovals = new Map();
+
+function requestApproval(sender, request) {
+  if (sender.isDestroyed()) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const id = randomUUID();
+    const finish = (approved) => {
+      clearTimeout(timer);
+      sender.removeListener("destroyed", cancel);
+      pendingApprovals.delete(id);
+      if (!sender.isDestroyed()) sender.send("chat:approval-closed", id);
+      resolve(approved);
+    };
+    const cancel = () => finish(false);
+    const timer = setTimeout(cancel, 120_000);
+    sender.once("destroyed", cancel);
+    pendingApprovals.set(id, { sender, finish });
+    sender.send("chat:approval", { id, ...request });
+  });
+}
+
+ipcMain.handle("chat:approve", ({ sender }, { id, approved }) => {
+  const entry = pendingApprovals.get(id);
+  if (entry?.sender === sender) entry.finish(approved === true);
+});
+
+ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => {
   if (conversation.archived === true) return { kind: "unavailable", text: "恢复会话后即可继续发送。" };
   const config = loadConfig();
   if (!config?.apiKey || config.apiKey === "(kept)") {
@@ -301,17 +330,34 @@ ipcMain.handle("chat:send", async (_event, { text, mode }) => {
     const workspace = workspaces.get(conversation.workspaceId);
     const workspaceDir = workspace?.available ? workspace.path : null;
     if (mode !== "team" && !workspaceDir) return { kind: "unavailable", text: "工作区位置不可用，请检查文件夹或磁盘。" };
+    if (mode === "creator" && !await isArrodesSource(workspaceDir, app.getAppPath())) {
+      return { kind: "unavailable", text: "创造模式需要在项目中打开独立的 Arrodes Git 源码副本。" };
+    }
     let result;
+    const executions = [];
     try {
       const run = mode === "team" ? runTeamTurn : runAgentTurn;
       result = await run({
         text: input,
+        creator: mode === "creator",
         history: conversation.history.filter(({ role }) => role !== "error").slice(-12),
         workspaceDir,
         config,
         customRoles: mode === "team" ? teamRoles.list() : [],
         canvas: mode === "team" ? teamCanvases.get(conversation.workspaceId) : null,
         skills: mode === "team" ? teamSkills.list() : [],
+        instructions: mode === "team" ? "" : skillInstructions(BASIC_AGENT_SKILLS),
+        openItem: (path) => shell.openPath(path),
+        launchDesktop: (target) => launchWindowsDesktop(target, (url) => shell.openExternal(url)),
+        approveAction: (request) => approveOperation(approvalMode, request, (pending) => requestApproval(sender, pending)),
+        onToolResult: (tool, outcome) => {
+          if (tool === "run_powershell" && executions.length < 24) {
+            executions.push({
+              ok: outcome.ok, cancelled: outcome.cancelled === true,
+              exitCode: outcome.exitCode ?? null, output: outcome.output,
+            });
+          }
+        },
         onCanvasEvent: (event) => win?.webContents?.send("canvas:event", { conversationId: conversation.id, event }),
         onProgress: (line) => win?.webContents?.send("chat:progress", { line }),
       });
@@ -319,12 +365,13 @@ ipcMain.handle("chat:send", async (_event, { text, mode }) => {
       result = { kind: "error", text: "无法连接模型，请检查网络和模型设置。" };
     }
     if (result.kind === "unavailable") return result;
+    if (executions.length) result = { ...result, executions };
     saveConversation({
       ...conversation,
       history: [
         ...conversation.history,
         { role: "user", content: input },
-        { role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration },
+        { role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration, executions: result.executions },
       ],
     });
     return result;
