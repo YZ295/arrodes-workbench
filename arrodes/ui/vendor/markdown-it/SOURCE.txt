@@ -1,0 +1,2 @@
+markdown-it 15.0.3 browser UMD distribution, from npm (MIT).
+https://www.npmjs.com/package/markdown-it/v/15.0.3

@@ -1,0 +1,34 @@
+{
+  "name": "arrodes",
+  "productName": "谦卑之心",
+  "version": "1.0.1",
+  "description": "谦卑之心 — Arrodes 桌面 Agent",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron ."
+  },
+  "build": {
+    "appId": "com.arrodes.humbleheart",
+    "productName": "谦卑之心",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "agent/**",
+      "ui/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "Arrodes${version}.${ext}"
+    },
+    "electronVersion": "45.3.0"
+  }
+}

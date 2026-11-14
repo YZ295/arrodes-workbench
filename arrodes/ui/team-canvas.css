@@ -1,0 +1,209 @@
+.team-canvas {
+  margin: 12px 20px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.canvas-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+}
+.canvas-header h2 { font-size: 14px; font-weight: 650; }
+.canvas-mode, .canvas-palette span { color: var(--muted); font-size: 11px; }
+.canvas-header > button { color: var(--accent-ink); }
+.canvas-header > button:first-of-type { margin-left: auto; }
+.canvas-body { display: grid; grid-template-columns: minmax(108px, 22%) minmax(0, 1fr); }
+.canvas-palette {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid var(--line);
+  max-height: clamp(154px, 32vh, 265px);
+}
+.canvas-palette > p { padding: 2px 2px 4px; font-size: 11px; color: var(--muted); }
+.canvas-palette > button {
+  cursor: grab;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  background: var(--sidebar);
+}
+.canvas-stage {
+  position: relative;
+  height: clamp(154px, 32vh, 265px);
+  overflow: hidden;
+  background: radial-gradient(var(--canvas-grid) 1px, transparent 1px) 3px 3px / 16px 16px, var(--panel);
+  --agent-width: clamp(88px, 11vw, 140px);
+  --agent-height: 52px;
+}
+.canvas-links, .canvas-nodes { position: absolute; inset: 0; width: 100%; height: 100%; }
+.canvas-link { fill: none; stroke: var(--accent); stroke-width: 1.55px; }
+.canvas-link.planned { opacity: .45; stroke-dasharray: 3 5; }
+.canvas-link.assist { stroke: var(--warning); stroke-dasharray: 5 4; }
+.canvas-link.delivered { stroke: var(--success); }
+.canvas-link.selected { stroke: var(--accent-ink); stroke-width: 2.4px; }
+.canvas-plane { fill: var(--accent); stroke: var(--accent-ink); stroke-width: 1px; filter: drop-shadow(0 0 3px var(--shadow)); }
+.canvas-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: var(--agent-width);
+  height: var(--agent-height);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 3px 4px 4px;
+  box-shadow: 0 2px 5px var(--shadow);
+}
+.canvas-node.running { border-color: var(--focus); box-shadow: 0 2px 6px var(--selection); }
+.canvas-node.done { border-color: var(--success); }
+.canvas-node.failed { border-color: var(--error-line); }
+.canvas-node.waiting_assist { border-color: var(--warning); }
+.canvas-grip {
+  border: 0;
+  padding: 2px 3px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: grab;
+  touch-action: none;
+}
+.canvas-node-head { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.canvas-node-head .canvas-grip { flex: 1; min-width: 0; }
+.canvas-skill-button {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--sidebar);
+  color: var(--text);
+  padding: 1px 3px;
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+.canvas-skill-button:hover { border-color: var(--focus); }
+.canvas-skill-list { max-height: min(50vh, 390px); overflow-y: auto; display: grid; gap: 5px; }
+.canvas-skill-list label { display: flex; align-items: start; gap: 8px; border: 1px solid var(--line); border-radius: 7px; padding: 8px; cursor: pointer; }
+.canvas-skill-list input { flex: 0 0 auto; margin-top: 2px; accent-color: var(--accent); }
+.canvas-skill-list strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.canvas-skill-list small { display: block; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
+.canvas-skill-picker { display: grid; gap: 8px; }
+.canvas-skill-picker > button { justify-self: start; }
+.canvas-skill-picker > p:empty { display: none; }
+.role-skill-section > summary { cursor: pointer; font-size: 13px; color: var(--accent-ink); }
+.role-skill-section[open] > summary { margin-bottom: 8px; }
+.role-skill-section .canvas-skill-list { max-height: min(23vh, 170px); }
+.canvas-github-skill {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  align-items: end;
+}
+.canvas-github-skill label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.canvas-github-skill input, .canvas-github-skill select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+.canvas-github-skill > button { padding-block: 6px; color: var(--accent-ink); }
+.canvas-github-choices { grid-column: 1 / -1; font-size: 12px; }
+.canvas-github-choices:empty, .role-dialog > p:empty { display: none; }
+.canvas-grip:active { cursor: grabbing; }
+.canvas-grip:disabled { cursor: default; opacity: 1; }
+.canvas-node-footer { display: flex; align-items: center; gap: 3px; padding-left: 3px; }
+.canvas-node-footer span { margin-right: auto; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.canvas-node.running .canvas-node-footer span { color: var(--accent-ink); }
+.canvas-node.done .canvas-node-footer span { color: var(--success); }
+.canvas-node.failed .canvas-node-footer span { color: var(--error); }
+.canvas-node.waiting_assist .canvas-node-footer span { color: var(--warning); }
+.canvas-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.canvas-icon:hover, .canvas-icon[aria-pressed="true"] { background: var(--selection); border-color: var(--focus); }
+.canvas-icon:disabled, .team-canvas button:disabled { cursor: default; }
+.canvas-error:not(:empty) { padding: 5px 8px 0; }
+.canvas-info, .canvas-transfers {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 5px 8px;
+}
+.canvas-info:empty, .canvas-transfers:empty { display: none; }
+.canvas-info button, .canvas-transfers button { flex: 0 0 auto; color: var(--accent-ink); }
+.canvas-transfers { border-top: 1px solid var(--line); }
+.canvas-artifacts, .canvas-preview { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.canvas-artifacts { display: flex; align-items: flex-start; flex-direction: column; gap: 6px; max-height: 26vh; overflow: auto; }
+.canvas-preview pre { max-height: 27vh; overflow: auto; white-space: pre-wrap; background: var(--panel); padding: 8px; margin-bottom: 8px; }
+.team-thread { padding: 10px 20px; }
+.team-thread:empty { padding: 0; }
+.team-thread .bubble { overflow-wrap: anywhere; }
+@media (max-height: 650px) {
+  .team-canvas { margin-top: 7px; }
+  .team-thread { padding-block: 7px; }
+  .team-thread + .composer { padding-block: 5px 8px; }
+}
+
+.canvas-port {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  transform: translateY(-50%);
+  cursor: crosshair;
+  touch-action: none;
+}
+.canvas-port[data-port="in"] { left: -11px; }
+.canvas-port[data-port="out"] { right: -11px; }
+.canvas-port::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.canvas-port:hover::before, .canvas-port[aria-pressed="true"]::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--selection);
+}
+.canvas-port:disabled { opacity: .7; }
+.canvas-link.preview { stroke-dasharray: 4 3; pointer-events: none; }

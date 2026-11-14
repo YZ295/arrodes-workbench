@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>谦卑之心</title>
+<link rel="stylesheet" href="team-canvas.css" />
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html {
+    color-scheme: light;
+    --surface: #ffffff;
+    --sidebar: #f4f5f7;
+    --panel: #fafbfc;
+    --ink: #1d1d1f;
+    --text: #30343b;
+    --muted: #545d6c;
+    --line: #d9dee6;
+    --hover: #e9edf2;
+    --selection: #e8f1ff;
+    --accent: #0064d2;
+    --accent-ink: #0753a4;
+    --focus: #0874dc;
+    --error: #a52e33;
+    --error-bg: #fff0f0;
+    --error-line: #edb9ba;
+    --overlay: #24324963;
+    --shadow: #1829421f;
+    --success: #247153;
+    --warning: #875619;
+    --canvas-grid: #cad3e1;
+  }
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif; background: var(--surface); color: var(--ink); }
+  #root { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+  .window-titlebar {
+    display: flex; flex: 0 0 auto; align-items: center; gap: 8px;
+    height: env(titlebar-area-height, 32px); padding-inline: 14px;
+    width: env(titlebar-area-width, 100%); background: var(--surface);
+    border-bottom: 1px solid var(--line); color: var(--ink); font-size: 12px;
+    app-region: drag; user-select: none;
+  }
+
+  .app-frame { display: grid; grid-template-columns: clamp(180px, 23vw, 232px) minmax(0, 1fr); height: 100%; min-height: 0; }
+  .chat-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--sidebar); border-right: 1px solid var(--line); }
+  .sidebar .brand { padding: 18px 16px; color: var(--ink); }
+  .sidebar nav { flex: 1; overflow: auto; padding: 4px 10px 14px; }
+  .sidebar section { margin-top: 19px; }
+  .sidebar header, .project-row { display: flex; align-items: center; gap: 4px; }
+  .sidebar header { min-height: 28px; padding-left: 9px; justify-content: space-between; }
+  .sidebar h2 { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .nav-button, .icon-button { border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+  .nav-button { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; width: 100%; padding: 6px 9px; text-align: left; }
+  .nav-button span:not(.avatar) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-button:hover, .icon-button:hover { background: var(--hover); color: var(--ink); }
+  .nav-button[aria-current="true"] { background: var(--selection); color: var(--accent-ink); }
+  .nav-button:disabled, .icon-button:disabled { opacity: .55; cursor: default; }
+  .nav-button:focus-visible, .icon-button:focus-visible, .tool:focus-visible, .send:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .nav-icon { flex: 0 0 auto; width: 15px; height: 15px; }
+  .icon-button { display: grid; flex: 0 0 27px; place-items: center; width: 27px; height: 27px; }
+  .recent-list { max-height: 176px; overflow: auto; }
+  .session-row { display: flex; align-items: center; gap: 2px; }
+  .session-row .nav-button { flex: 1; }
+  .session-action { opacity: 0; }
+  .session-row:hover .session-action, .session-row:focus-within .session-action { opacity: 1; }
+  .archive-list { margin-top: 8px; }
+  .archive-list summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 7px 9px; }
+  .archived-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; }
+  .project-row > .nav-button { flex: 1; }
+  .project-row [aria-expanded="true"] .disclosure { transform: rotate(90deg); }
+  .project-sessions { margin: 1px 0 4px 16px; padding-left: 5px; border-left: 1px solid var(--line); }
+  .sidebar-footer { padding: 9px 10px; border-top: 1px solid var(--line); }
+  .avatar { display: grid; flex: 0 0 27px; place-items: center; width: 27px; height: 27px; border-radius: 50%; background: var(--selection); color: var(--accent-ink); font-size: 12px; }
+  .team-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .team-header h1 { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+  .team-actions { display: flex; gap: 7px; }
+  .role-dialog { margin: auto; color: var(--ink); }
+  .role-dialog::backdrop { background: var(--overlay); }
+  .role-dialog dl { max-height: min(52vh, 390px); overflow-y: auto; overflow-wrap: anywhere; }
+  .role-dialog dt { font-size: 13px; font-weight: 600; }
+  .role-dialog dd { font-size: 12px; color: var(--muted); margin: 4px 0 12px; }
+  .role-dialog dd small { display: block; color: #a1acc9; margin-top: 3px; }
+  .role-form { display: grid; gap: 10px; }
+  .role-form textarea { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  .role-access { display: flex; flex-wrap: wrap; gap: 8px 16px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .role-access legend { color: var(--muted); font-size: 12px; padding-inline: 3px; }
+  .role-access label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .team-trace { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); }
+  .team-trace summary { cursor: pointer; width: fit-content; color: var(--accent-ink); }
+  .team-trace ul { padding: 7px 0 0 19px; }
+  .team-trace li { overflow-wrap: anywhere; }
+  @media (max-width: 800px) { .sidebar nav, .sidebar-footer { padding-inline: 8px; } }
+
+  .brand { display: flex; align-items: center; gap: 9px; padding: 12px 16px; font-size: 15px; font-weight: 650; color: var(--text); }
+  .logo { width: 18px; height: 18px; border-radius: 6px;
+    background: radial-gradient(circle at 50% 50%, #fff 0 22%, #c5e0ff 24% 44%, transparent 46%), var(--accent);
+    box-shadow: 0 1px 3px #003f8a35; }
+
+  .thread { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .bubble { max-width: 680px; margin: 0 auto; width: 100%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+  .bubble.user { align-self: flex-end; background: var(--selection); }
+  .bubble.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+  .message-markdown { white-space: normal; overflow-wrap: anywhere; }
+  .message-markdown > :first-child { margin-top: 0; }
+  .message-markdown > :last-child { margin-bottom: 0; }
+  .message-markdown h1, .message-markdown h2, .message-markdown h3 { font-size: 1.12em; }
+  .message-markdown ul, .message-markdown ol { padding-inline-start: 1.55em; }
+  .message-markdown pre { white-space: pre; overflow: auto; padding: 8px 10px; }
+  .message-markdown code { background: var(--selection); border-radius: 4px; padding: 1px 4px; }
+  .message-markdown pre code { padding: 0; background: none; }
+  .message-markdown table { display: block; overflow: auto; border-collapse: collapse; }
+  .message-markdown :is(th, td) { border: 1px solid var(--line); padding: 3px 7px; }
+  .message-markdown blockquote { border-inline-start: 2px solid var(--line); margin-inline: 0; padding-inline-start: 12px; }
+  .connection-checks { display: flex; gap: 8px; flex-wrap: wrap; }
+  .connection-status { margin: 0; min-height: 1.3em; font-size: 12px; color: var(--muted); }
+  .bubble.progress { align-self: flex-start; color: var(--muted); font-size: 12px; background: transparent; }
+  .bubble.error { align-self: flex-start; background: var(--error-bg); border: 1px solid var(--error-line); color: var(--error); }
+
+  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 0 24px 40px; }
+  .hero h1 { font-size: 34px; font-weight: 650; letter-spacing: -.035em; text-wrap: balance; color: var(--ink); }
+  .hero .logo-lg { width: 48px; height: 48px; border-radius: 12px;
+    background: radial-gradient(circle at 50% 50%, #fff 0 22%, #c5e0ff 24% 44%, transparent 46%), var(--accent);
+    box-shadow: 0 4px 10px #003f8a2b; }
+
+  .composer { padding: 10px 20px 16px; }
+  .composer-box { width: min(720px, 100%); margin: 0 auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); padding: 14px; box-shadow: 0 4px 16px var(--shadow); }
+  .composer-box:focus-within { border-color: var(--focus); }
+  textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--ink); font: inherit; font-size: 14px; line-height: 1.5; }
+  .toolbar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .workspace-picker { position: relative; min-width: 0; max-width: 48%; }
+  .workspace-picker summary { display: flex; align-items: center; gap: 6px; list-style: none; }
+  .workspace-picker summary::-webkit-details-marker { display: none; }
+  .workspace-picker summary .disclosure { width: 11px; height: 11px; transform: rotate(90deg); }
+  .workspace-picker[open] summary .disclosure { transform: rotate(-90deg); }
+  .workspace-label, .workspace-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workspace-picker .workspace-label { min-width: 0; }
+  .workspace-options { position: absolute; bottom: calc(100% + 7px); left: 0; z-index: 3; width: min(355px, 57vw); max-height: 255px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 20px var(--shadow); }
+  .workspace-option { display: grid; grid-template-columns: 17px minmax(0, 1fr); align-items: center; width: 100%; border: 0; background: transparent; border-radius: 5px; padding: 6px 9px; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+  .workspace-option:hover, .workspace-option[aria-current="true"] { background: var(--selection); }
+  .workspace-option:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .workspace-option .workspace-label, .workspace-option .workspace-path { display: block; }
+  .workspace-option .workspace-label { font-size: 13px; }
+  .workspace-path { margin-top: 2px; color: var(--muted); font-size: 11px; }
+  .tool { font-size: 12px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+  .tool:hover { border-color: var(--focus); color: var(--accent-ink); }
+  .workspace-name { font-size: 12px; color: var(--muted); margin-left: 4px; }
+  .send { margin-left: auto; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-size: 13px; padding: 6px 18px; cursor: pointer; }
+  .send:disabled, .primary:disabled { background: var(--hover); color: var(--muted); cursor: default; }
+
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: grid; place-items: center; z-index: 10; }
+  .dialog { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; width: min(440px, 92vw); max-height: calc(100dvh - 36px); overflow: auto; box-shadow: 0 18px 56px #1b2b4430; display: flex; flex-direction: column; gap: 10px; }
+  .dialog h2 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); }
+  .field[hidden] { display: none; }
+  .field :is(input, select) { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .actions .attach-folder { margin-right: auto; }
+  .location { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  .location .hint { min-width: 0; overflow-wrap: anywhere; }
+  .location .ghost { flex: 0 0 auto; }
+  .primary { border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-size: 13px; padding: 7px 16px; cursor: pointer; }
+  .ghost { border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; padding: 7px 14px; cursor: pointer; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .error-text { color: var(--error); font-size: 12px; }
+  .send:not(:disabled):hover, .primary:not(:disabled):hover { background: var(--accent-ink); }
+  :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .composer-box textarea:focus-visible { outline: none; }
+  textarea::placeholder, input::placeholder { color: var(--muted); opacity: 1; }
+  ::selection { background: #cfe4ff; color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="window-titlebar" aria-hidden="true"><span class="logo"></span>谦卑之心</div>
+<div id="root"></div>
+<script>
+function showStartupError() {
+  const notice = document.createElement("p");
+  notice.className = "bubble error";
+  notice.setAttribute("role", "alert");
+  notice.textContent = "谦卑之心未能打开，请关闭窗口后重试。";
+  document.getElementById("root").replaceChildren(notice);
+}
+window.addEventListener("error", showStartupError);
+</script>
+<script src="team-canvas.js"></script>
+<script src="vendor/markdown-it/markdown-it.umd.min.js"></script>
+<script>
+const state = {
+  history: [],
+  workspace: "默认工作区",
+  workspaces: [],
+  sessions: [],
+  archived: false,
+  archiveOpen: false,
+  expandedProjects: new Set(),
+  conversationId: null,
+  view: "chat",
+  switching: false,
+  busy: false,
+  ready: false,
+  configured: false,
+  notice: "",
+};
+
+const root = document.getElementById("root");
+const teamCanvas = createTeamCanvas(() => {
+  const button = document.getElementById("send");
+  if (button && state.view === "collaboration") button.disabled = !state.ready || state.busy || teamCanvas.pending;
+});
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node[key.toLowerCase()] = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) {
+    node.append(child);
+  }
+  return node;
+}
+
+const markdown = window.markdownit({ html: false, breaks: true });
+markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
+markdown.renderer.rules.link_open = () => "";
+markdown.renderer.rules.link_close = () => "";
+
+function render() {
+  const focused = document.activeElement?.id;
+  root.replaceChildren(build());
+  if (focused) document.getElementById(focused)?.focus();
+  const thread = document.getElementById("thread");
+  if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+function build() {
+  const container = el("main", { class: "chat-pane" });
+  const frame = el("div", { class: "app-frame" }, sidebar(), container);
+  const team = state.view === "collaboration";
+  if (team) {
+    container.append(el("header", { class: "team-header" },
+      el("h1", {}, "多 Agent"),
+      el("div", { class: "team-actions" },
+        el("button", { class: "tool", type: "button", onclick: openTeamRoles }, "可用角色"),
+        el("button", { class: "tool", type: "button", onclick: returnToChat }, "返回对话"),
+      ),
+    ));
+    teamCanvas.sync(state.workspace, state.conversationId, state.history, state.busy);
+    container.append(teamCanvas.root);
+  }
+
+  if (state.notice) container.append(el("p", { class: "bubble error", role: "alert" }, state.notice));
+
+  if (!team && state.history.length === 0) {
+    const hero = el("div", { class: "hero" }, el("div", { class: "logo-lg" }), el("h1", {}, "今天想做什么？"));
+    hero.append(composer());
+    container.append(hero);
+  } else {
+    const thread = el("div", { class: team ? "thread team-thread" : "thread", id: "thread" });
+    for (const bubble of state.history) {
+      const message = el("div", { class: `bubble ${bubble.role}` });
+      if (bubble.role === "assistant") {
+        const formatted = el("div", { class: "message-markdown" });
+        formatted.innerHTML = markdown.render(bubble.content);
+        message.append(formatted);
+      } else {
+        message.textContent = bubble.content;
+      }
+      if (bubble.collaboration) message.append(teamTrace(bubble.collaboration));
+      thread.append(message);
+    }
+    if (state.progress) thread.append(el("div", { class: "bubble progress" }, state.progress));
+    container.append(thread);
+    const bottom = el("div", { class: "composer" });
+    bottom.append(composer());
+    container.append(bottom);
+  }
+  return frame;
+}
+
+function teamTrace({ events, checks, canvasEvents }) {
+  const steps = (Array.isArray(events) ? events : []).map((event) => el("li", {}, event));
+  const skills = (canvasEvents ?? []).filter(({ type }) => type === "skill.applied")
+    .map(({ roleName, skills }) => `${roleName} 使用 Skill · ${skills.join("、")}`);
+  const evidence = (Array.isArray(checks) ? checks : []).map(({ path, output }) => el("li", {}, `${path} · ${output}`));
+  return el("details", { class: "team-trace" }, el("summary", {}, "协作过程"),
+    el("ul", {}, ...steps, ...[...new Set(skills)].map((entry) => el("li", {}, entry)), ...evidence));
+}
+
+async function openTeamRoles(createOnly = false) {
+  createOnly = createOnly === true;
+  let roles;
+  try {
+    roles = await window.arrodes.getTeamRoles();
+  } catch {
+    state.notice = "无法读取角色配置，请重试。";
+    render();
+    return;
+  }
+  const dialog = el("dialog", { class: "dialog role-dialog", "aria-labelledby": "roles-title" });
+  const title = el("h2", { id: "roles-title" }, "可用角色");
+  function showRoles() {
+    title.textContent = "可用角色";
+    const list = el("dl", {}, ...roles.flatMap(({ name, description, custom, access }) => [
+      el("dt", {}, name),
+      el("dd", {}, description, ...(custom ? [el("small", {}, access === "write" ? "读写工作区" : "只读")] : [])),
+    ]));
+    dialog.replaceChildren(title, list, el("div", { class: "actions" },
+      el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "关闭"),
+      el("button", { type: "button", class: "primary", onclick: showCreateForm }, "新建角色"),
+    ));
+  }
+  function showCreateForm() {
+    title.textContent = createOnly ? "新建角色" : "可用角色";
+    const name = el("input", { maxlength: "40", required: "" });
+    const description = el("textarea", { maxlength: "1200", rows: "4", required: "" });
+    const read = el("input", { type: "radio", name: "role-access", value: "read", checked: "" });
+    const write = el("input", { type: "radio", name: "role-access", value: "write" });
+    const error = el("p", { class: "error-text", role: "alert" });
+    const save = el("button", { type: "submit", class: "primary" }, createOnly ? "保存" : "保存角色");
+    const skillIds = new Set();
+    const picker = teamCanvas.skillPicker(skillIds, save);
+    const skillSection = el("details", { class: "role-skill-section" }, el("summary", {}, "Skill（可选）"), picker.panel);
+    const form = el("form", { class: "role-form" }, field("角色名称", name), field("职责", description),
+      el("fieldset", { class: "role-access" }, el("legend", {}, "工具权限"),
+        el("label", {}, read, "只读"), el("label", {}, write, "读写工作区"),
+      ), skillSection, error, el("div", { class: "actions" },
+        el("button", { type: "button", class: "ghost", onclick: createOnly ? () => dialog.close() : showRoles }, "取消"), save,
+      ));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      picker.lock(true);
+      try {
+        const result = await window.arrodes.createTeamRole({ name: name.value, description: description.value, access: read.checked ? "read" : "write", skillIds: [...skillIds] });
+        if (!result.ok) { error.textContent = result.error; return; }
+        roles = result.roles;
+        teamCanvas.refreshRoles(roles);
+        if (createOnly) dialog.close();
+        else showRoles();
+      } catch {
+        error.textContent = "无法保存角色，请重试。";
+      } finally {
+        picker.lock(false);
+      }
+    });
+    dialog.replaceChildren(title, form);
+    name.focus();
+  }
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  if (createOnly) showCreateForm();
+  else showRoles();
+  dialog.showModal();
+}
+
+function icon(name) {
+  const paths = {
+    agents: "M8 2v12M3 5h10M3 11h10M3 4v2m10-2v2M3 10v2m10-2v2",
+    chat: "M13.5 10H6l-3.5 2.5V4h11z",
+    folder: "M2 12.5v-9h5l1.5 2H14v7z",
+    disclosure: "m6 4 4 4-4 4",
+    check: "m3 8 3 3 7-7",
+    plus: "M8 3v10M3 8h10",
+    archive: "M2 3h12v3H2zM3 6v7h10V6M6 8.5h4",
+    restore: "M5.5 2.5 2.5 5.5l3 3M2.5 5.5h7a3.5 3.5 0 0 1 0 7H7",
+  };
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", `nav-icon ${name}`);
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(svg.namespaceURI, "path");
+  path.setAttribute("d", paths[name]);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.35");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("stroke-linecap", "round");
+  svg.append(path);
+  return svg;
+}
+
+function sidebar() {
+  const unavailable = state.busy || state.switching;
+  const makeButton = (attrs, ...children) => {
+    const button = el("button", { type: "button", ...attrs }, ...children);
+    button.disabled = unavailable;
+    return button;
+  };
+  const sessionButton = (session, section) => el("div", { class: "session-row" }, makeButton({
+    class: "nav-button", id: `${section}-${session.id}`, title: session.title,
+    "aria-current": String(state.view === "chat" && session.id === state.conversationId),
+    onclick: () => switchConversation(() => window.arrodes.openConversation(session.id)),
+  }, icon("chat"), el("span", {}, session.title)), makeButton({
+    class: "icon-button session-action",
+    "aria-label": `${session.archived ? "恢复" : "归档"}会话：${session.title}`,
+    title: session.archived ? "恢复会话" : "归档会话",
+    onclick: () => setArchived(session.id, !session.archived),
+  }, icon(session.archived ? "restore" : "archive")));
+  const addButton = (label, title, onclick) => makeButton({
+    class: "icon-button", "aria-label": label, title, onclick,
+  }, icon("plus"));
+  const projects = state.workspaces.map((workspace, index) => {
+    const { id, name, path, available } = workspace;
+    const expanded = state.expandedProjects.has(id);
+    const row = makeButton({
+      class: "nav-button", id: `workspace-${index}`, title: path,
+      "aria-label": workspaceLabel(workspace), "aria-expanded": String(expanded),
+      onclick: () => {
+        if (expanded) state.expandedProjects.delete(id);
+        else state.expandedProjects.add(id);
+        render();
+      },
+    }, icon("disclosure"), icon("folder"), el("span", {}, workspaceLabel(workspace)));
+    const children = state.sessions.filter((session) => !session.archived && session.workspaceId === id);
+    const newChat = addButton(`${name}：新建会话`, "在此项目新建会话", () => startConversation(id));
+    newChat.disabled ||= !available;
+    return el("div", {}, el("div", { class: "project-row" }, row,
+      newChat,
+    ), ...(expanded && children.length ? [el("div", { class: "project-sessions" },
+      ...children.map((session) => sessionButton(session, "project")),
+    )] : []));
+  });
+  return el("aside", { class: "sidebar" },
+    el("div", { class: "brand" }, el("span", { class: "logo" }), "谦卑之心"),
+    el("nav", { "aria-label": "主导航" },
+      el("button", { type: "button", id: "multi-agent", class: "nav-button", "aria-current": String(state.view === "collaboration"), onclick: () => {
+        state.view = "collaboration";
+        render();
+      } }, icon("agents"), el("span", {}, "多 Agent")),
+      el("section", { "aria-labelledby": "sessions-label" },
+        el("header", {}, el("h2", { id: "sessions-label" }, "会话"),
+          addButton("新建会话", "新建会话", () => startConversation(state.workspace)),
+        ),
+        el("div", { class: "recent-list" }, ...state.sessions.filter((session) => !session.archived).map((session) => sessionButton(session, "recent"))),
+      ),
+      ...(state.sessions.some((session) => session.archived) ? [
+        el("details", { class: "archive-list", ...(state.archiveOpen ? { open: "" } : {}),
+          ontoggle: (event) => { if (event.currentTarget.isConnected) state.archiveOpen = event.currentTarget.open; } },
+        el("summary", {}, "已归档会话"),
+        ...state.sessions.filter((session) => session.archived).map((session) => sessionButton(session, "archived"))),
+      ] : []),
+      el("section", { "aria-labelledby": "projects-label" },
+        el("header", {}, el("h2", { id: "projects-label" }, "项目"),
+          addButton("+ 新建工作区", "新建项目（工作区）", openWorkspaceCreator),
+        ),
+        ...projects,
+      ),
+    ),
+    el("div", { class: "sidebar-footer" }, el("button", {
+      class: "nav-button", type: "button", id: "settings", "aria-label": "设置", onclick: openSettings,
+    }, el("span", { class: "avatar", "aria-hidden": "true" }, "愚"), el("span", {}, "设置"))),
+  );
+}
+
+function returnToChat() {
+  state.view = "chat";
+  render();
+  document.getElementById("input")?.focus();
+}
+
+function showConversation(conversation) {
+  state.conversationId = conversation.id;
+  state.history = conversation.history;
+  state.archived = conversation.archived === true;
+  state.workspace = conversation.workspaceId;
+  state.expandedProjects.add(state.workspace);
+}
+
+async function setArchived(id, archived) {
+  if (state.busy || state.switching) return;
+  state.switching = true;
+  state.notice = "";
+  try {
+    const current = await window.arrodes.archiveConversation(id, archived);
+    if (id === state.conversationId) showConversation(current);
+    if (archived) state.archiveOpen = true;
+    state.sessions = await window.arrodes.listConversations();
+  } catch {
+    state.notice = "无法更新会话归档状态，请重试。";
+  } finally {
+    state.switching = false;
+    render();
+  }
+}
+
+async function switchConversation(action) {
+  if (state.busy || state.switching) return;
+  state.switching = true;
+  state.notice = "";
+  try {
+    showConversation(await action());
+    state.sessions = await window.arrodes.listConversations().catch(() => state.sessions);
+    state.draft = "";
+  } catch {
+    state.notice = "无法打开会话，请重试。";
+  } finally {
+    state.switching = false;
+    render();
+    document.getElementById("input")?.focus();
+  }
+}
+
+function startConversation(workspaceId) {
+  return switchConversation(() => window.arrodes.newConversation(workspaceId));
+}
+
+function selectWorkspace(workspaceId) {
+  const recent = state.sessions.find((session) => !session.archived && session.workspaceId === workspaceId);
+  if (recent) return switchConversation(() => window.arrodes.openConversation(recent.id));
+  return startConversation(workspaceId);
+}
+
+function workspaceLabel(workspace) {
+  const duplicate = state.workspaces.some(({ id, name }) => id !== workspace.id && name === workspace.name);
+  const label = duplicate ? `${workspace.name} · ${workspace.path}` : workspace.name;
+  return workspace.available ? label : `${label}（不可用）`;
+}
+
+function workspacePicker() {
+  const active = state.workspaces.find(({ id }) => id === state.workspace);
+  const trigger = el("summary", {
+    class: "tool", id: "workspace-trigger", title: active?.path ?? "选择工作区",
+    "aria-label": "工作空间",
+  }, icon("folder"), el("span", { class: "workspace-label" }, active ? workspaceLabel(active) : "选择工作区"), icon("disclosure"));
+  const options = state.workspaces.map((workspace) => {
+    const current = workspace.id === state.workspace;
+    return el("button", {
+      class: "workspace-option", type: "button", title: workspace.path,
+      "aria-current": String(current), onclick: () => { picker.open = false; void selectWorkspace(workspace.id); },
+    }, current ? icon("check") : el("span", { "aria-hidden": "true" }),
+    el("span", {}, el("span", { class: "workspace-label" }, workspaceLabel(workspace)), el("span", { class: "workspace-path" }, workspace.path)));
+  });
+  const picker = el("details", { class: "workspace-picker", id: "workspace-picker" }, trigger, el("div", { class: "workspace-options" }, ...options));
+  trigger.addEventListener("click", (event) => { if (state.busy || state.switching) event.preventDefault(); });
+  picker.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !picker.open) return;
+    event.preventDefault();
+    picker.open = false;
+    trigger.focus();
+  });
+  return picker;
+}
+
+function composer() {
+  if (state.archived) return el("div", { class: "composer-box archived-banner" },
+    el("span", {}, "此会话已归档"),
+    el("button", { type: "button", class: "tool", onclick: () => setArchived(state.conversationId, false) }, "恢复会话"));
+  const team = state.view === "collaboration";
+  const textarea = el("textarea", {
+    rows: "2",
+    "aria-label": "消息",
+    placeholder: state.configured ? (team ? "描述你想交给团队的任务…" : "说说你想做的事…") : "先连接模型（左下角设置），然后告诉我你想做什么",
+    id: "input",
+  });
+  textarea.value = state.draft ?? "";
+  textarea.addEventListener("input", () => { state.draft = textarea.value; });
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      send();
+    }
+  });
+
+  const sendButton = el("button", { class: "send", id: "send" }, state.busy ? "执行中…" : team ? "开始协作" : "发送");
+  sendButton.disabled = !state.ready || state.busy || (team && teamCanvas.pending);
+  sendButton.addEventListener("click", send);
+
+  const openFolder = el("button", { class: "tool" }, "打开目录");
+  openFolder.addEventListener("click", async () => {
+    const result = await window.arrodes.openWorkspace(state.workspace);
+    if (result.ok) return;
+    state.notice = result.error;
+    render();
+  });
+
+  const box = el("div", { class: "composer-box" }, textarea,
+    el("div", { class: "toolbar" }, workspacePicker(), openFolder, sendButton));
+  return box;
+}
+
+async function send() {
+  const text = (state.draft ?? "").trim();
+  if (!text || state.archived || state.busy || state.switching || !state.ready ||
+      (state.view === "collaboration" && teamCanvas.pending)) return;
+  if (!state.configured) {
+    openSettings();
+    return;
+  }
+  const mode = state.view === "collaboration" ? "team" : "chat";
+  state.busy = true;
+  state.draft = "";
+  state.progress = null;
+  state.notice = "";
+  state.history.push({ role: "user", content: text });
+  render();
+
+  let result;
+  try {
+    result = await window.arrodes.send({ text, mode });
+    if (result.kind !== "need_config" && result.kind !== "unavailable") {
+      state.sessions = await window.arrodes.listConversations().catch(() => state.sessions);
+    }
+  } catch {
+    result = { kind: "error", text: "消息处理失败，请重试。" };
+  }
+
+  if (result.kind === "need_config" || result.kind === "unavailable") {
+    state.busy = false;
+    state.draft = text;
+    state.history.pop();
+    if (result.kind === "unavailable") state.notice = result.text;
+    else state.configured = false;
+    render();
+    if (result.kind === "need_config") openSettings();
+    return;
+  }
+
+  state.history.push({ role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration });
+  state.busy = false;
+  state.progress = null;
+  render();
+  document.getElementById("input")?.focus();
+}
+
+function openWorkspaceCreator() {
+  const backdrop = el("div", { class: "backdrop" });
+  const name = el("input", { maxlength: "40", required: "" });
+  const errorLine = el("p", { class: "error-text", role: "alert" });
+  const location = el("p", { class: "hint" }, "默认位置（应用数据目录）");
+  let parent = null;
+  const choose = el("button", { type: "button", class: "ghost", onclick: async () => {
+    try {
+      const selected = await window.arrodes.chooseWorkspaceParent();
+      if (!selected) return;
+      parent = selected;
+      location.textContent = selected;
+      errorLine.textContent = "";
+    } catch {
+      errorLine.textContent = "无法使用这个位置，请选择其他文件夹。";
+    }
+  } }, "选择位置");
+  const attach = el("button", { type: "button", class: "ghost attach-folder", onclick: async () => {
+    try {
+      const id = await window.arrodes.attachWorkspace();
+      if (!id) return;
+      state.workspaces = await window.arrodes.listWorkspaces();
+      backdrop.remove();
+      await selectWorkspace(id);
+    } catch {
+      errorLine.textContent = "无法添加这个文件夹，请检查目录后重试。";
+    }
+  } }, "添加已有文件夹");
+  const create = el("button", { type: "submit", class: "primary" }, "创建");
+  const form = el("form", { class: "dialog" },
+    el("h2", {}, "添加工作区"), field("工作区名称", name),
+    el("div", { class: "location" }, location, choose), errorLine,
+    el("div", { class: "actions" },
+      attach,
+      el("button", { type: "button", class: "ghost", onclick: () => backdrop.remove() }, "取消"),
+      create,
+    ),
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    create.disabled = true;
+    try {
+      const workspace = await window.arrodes.createWorkspace(name.value, parent);
+      state.workspaces = await window.arrodes.listWorkspaces();
+      backdrop.remove();
+      await selectWorkspace(workspace);
+    } catch {
+      errorLine.textContent = "无法创建工作区，请检查名称和位置后重试。";
+    } finally {
+      create.disabled = false;
+    }
+  });
+  backdrop.append(form);
+  document.body.append(backdrop);
+  name.focus();
+}
+
+function openSettings() {
+  window.arrodes.getConfig().then((config) => {
+    const backdrop = el("div", { class: "backdrop" });
+    const dialog = el("div", { class: "dialog" });
+    dialog.append(el("h2", {}, "连接模型"));
+    dialog.append(el("p", { class: "hint" }, "API Key 加密保存在本机，用于连接你配置的模型服务。"));
+
+    const baseUrl = el("input", { value: config.baseUrl ?? "" });
+    const modelId = el("input", { value: config.modelId ?? "" });
+    const apiKey = el("input", { type: "password", value: "", placeholder: config.configured ? "已保存（重新输入可更换）" : "sk-..." });
+    const errorLine = el("p", { class: "error-text", role: "alert" });
+    const status = el("p", { class: "connection-status", role: "status" });
+    const modelList = el("select");
+    const modelField = field("已发现模型", modelList);
+    modelField.hidden = true;
+    const draft = () => ({ baseUrl: baseUrl.value, modelId: modelId.value, apiKey: apiKey.value });
+    let revision = 0;
+
+    const check = async (mode) => {
+      const current = revision;
+      getModels.disabled = testConnection.disabled = true;
+      status.textContent = mode === "list" ? "正在获取模型…" : "正在测试连接…";
+      errorLine.textContent = "";
+      try {
+        const result = await (mode === "list" ? window.arrodes.listModels(draft()) : window.arrodes.testModel(draft()));
+        if (current !== revision || !backdrop.isConnected) return;
+        if (result.error) {
+          status.textContent = "";
+          errorLine.textContent = result.error;
+        } else if (mode === "list") {
+          modelList.replaceChildren(el("option", { value: "" }, "选择模型"),
+            ...result.models.map((id) => el("option", { value: id }, id)));
+          modelField.hidden = result.models.length === 0;
+          status.textContent = result.models.length
+            ? `找到 ${result.models.length} 个模型。选择后可测试连接。`
+            : "接口未返回模型，可手动填写后测试连接。";
+        } else {
+          status.textContent = "连接成功，模型已返回回复。";
+        }
+      } catch {
+        if (current !== revision || !backdrop.isConnected) return;
+        status.textContent = "";
+        errorLine.textContent = "连接检查失败，请重试。";
+      } finally {
+        getModels.disabled = testConnection.disabled = false;
+      }
+    };
+    const getModels = el("button", { class: "ghost", onclick: () => check("list") }, "获取模型");
+    const testConnection = el("button", { class: "ghost", onclick: () => check("test") }, "测试连接");
+    const clearStatus = () => {
+      revision += 1;
+      status.textContent = "";
+      errorLine.textContent = "";
+    };
+    for (const input of [baseUrl, apiKey]) {
+      input.addEventListener("input", () => {
+        clearStatus();
+        modelField.hidden = true;
+        modelList.replaceChildren();
+      });
+    }
+    modelId.addEventListener("input", clearStatus);
+    modelList.addEventListener("change", () => {
+      if (modelList.value) modelId.value = modelList.value;
+      clearStatus();
+    });
+
+    dialog.append(
+      field("接口地址", baseUrl),
+      field("API Key", apiKey),
+      field("模型", modelId),
+      el("div", { class: "connection-checks" }, getModels, testConnection),
+      modelField,
+      status,
+      errorLine,
+    );
+
+    const save = async () => {
+      try {
+        const result = await window.arrodes.saveConfig(draft());
+        if (!result.ok) {
+          errorLine.textContent = result.error;
+          return;
+        }
+        state.configured = true;
+        backdrop.remove();
+        render();
+      } catch {
+        errorLine.textContent = "无法保存模型设置，请重试。";
+      }
+    };
+
+    const actions = el("div", { class: "actions" },
+      el("button", { class: "ghost", onclick: () => backdrop.remove() }, "稍后"),
+      el("button", { class: "primary", onclick: save }, "保存"),
+    );
+    dialog.append(actions);
+    backdrop.append(dialog);
+    document.body.append(backdrop);
+  }).catch(() => {
+    state.notice = "无法读取模型设置，请重试。";
+    render();
+  });
+}
+
+function field(label, input) {
+  return el("label", { class: "field" }, el("span", {}, label), input);
+}
+
+window.arrodes.onProgress((payload) => {
+  state.progress = payload.line;
+  const thread = document.getElementById("thread");
+  const progressNode = thread?.querySelector(".bubble.progress");
+  if (progressNode) progressNode.textContent = payload.line;
+  else render();
+});
+window.arrodes.onCanvasEvent(({ conversationId, event }) => {
+  if (conversationId === state.conversationId) teamCanvas.receive(event);
+});
+
+document.addEventListener("click", (event) => {
+  const picker = document.getElementById("workspace-picker");
+  if (picker?.open && !picker.contains(event.target)) picker.open = false;
+});
+
+Promise.all([
+  window.arrodes.getConfig(), window.arrodes.getConversation(),
+  window.arrodes.listWorkspaces(), window.arrodes.listConversations(),
+]).then(([config, conversation, workspaces, sessions]) => {
+  state.configured = config.configured;
+  state.workspaces = workspaces;
+  state.sessions = sessions;
+  showConversation(conversation);
+  state.ready = true;
+  render();
+  document.getElementById("input")?.focus();
+}).catch(showStartupError);
+</script>
+</body>
+</html>
