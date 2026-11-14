@@ -269,7 +269,7 @@ function createTeamCanvas(updateSendButton) {
     const list = el("div", { class: "canvas-skill-list" });
     const message = el("p", { class: "error-text", role: "alert" });
     const feedback = el("p", { class: "hint", role: "status" });
-    const renderList = () => list.replaceChildren(...skills.map(({ id, name, description }) => {
+    const renderList = () => list.replaceChildren(...skills.map(({ id, name, description, triggers }) => {
       const box = el("input", { type: "checkbox" });
       box.checked = selected.has(id);
       box.onchange = () => {
@@ -277,7 +277,8 @@ function createTeamCanvas(updateSendButton) {
         else selected.delete(id);
       };
       return el("label", {}, box, el("span", {}, el("strong", {}, name),
-        ...(description ? [el("small", {}, description)] : [])));
+        ...(description ? [el("small", {}, description)] : []),
+        ...(triggers?.length ? [el("small", {}, `适用场景：${triggers.join("、")}`)] : [])));
     }));
     function register(result) {
       if (result.skills) {
@@ -288,11 +289,12 @@ function createTeamCanvas(updateSendButton) {
       }
     }
     const githubUrl = el("input", { type: "url", placeholder: "https://github.com/…", "aria-label": "GitHub 地址" });
+    const scenarios = el("input", { maxlength: "320", placeholder: "例如：退款审计，重复退款" });
     const githubChoices = el("div", { class: "canvas-github-choices" });
     const githubButton = el("button", { type: "button", class: "tool", onclick: importGithub }, "导入 GitHub");
     let choice;
     function lockImport(disabled) {
-      importer.disabled = saveButton.disabled = githubButton.disabled = githubUrl.disabled = disabled;
+      importer.disabled = saveButton.disabled = githubButton.disabled = githubUrl.disabled = scenarios.disabled = disabled;
       if (choice) choice.disabled = disabled;
     }
     async function importGithub() {
@@ -303,7 +305,7 @@ function createTeamCanvas(updateSendButton) {
       lockImport(true);
       feedback.textContent = "正在读取 GitHub…";
       try {
-        const result = await window.arrodes.importGithubSkill(input);
+        const result = await window.arrodes.importGithubSkill(input, scenarios.value);
         feedback.textContent = "";
         if (!result.ok) { message.textContent = result.error; return; }
         if (result.choices) {
@@ -340,7 +342,7 @@ function createTeamCanvas(updateSendButton) {
       message.textContent = "";
       feedback.textContent = "";
       try {
-        const result = await window.arrodes.importTeamSkill();
+        const result = await window.arrodes.importTeamSkill(scenarios.value);
         if (!result.ok) { message.textContent = result.error; return; }
         register(result);
       } catch {
@@ -351,7 +353,9 @@ function createTeamCanvas(updateSendButton) {
     });
     renderList();
     return {
-      panel: el("div", { class: "canvas-skill-picker" }, githubForm, feedback, message, list, importer),
+      panel: el("div", { class: "canvas-skill-picker" },
+        el("label", {}, "适用场景（可选，以逗号分隔）", scenarios),
+        githubForm, feedback, message, list, importer),
       lock: lockImport,
     };
   }

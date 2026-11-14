@@ -96,17 +96,24 @@ export function createTeamSkillStore(dataDir) {
     }
     if (!Array.isArray(imported) || imported.some((skill) => !skill ||
       !/^local-[0-9a-f]{64}$/.test(skill.id) || typeof skill.name !== "string" ||
-      typeof skill.description !== "string" || typeof skill.instructions !== "string")) {
+      typeof skill.description !== "string" || typeof skill.instructions !== "string" ||
+      (skill.triggers !== undefined && (!Array.isArray(skill.triggers) ||
+        skill.triggers.some((term) => typeof term !== "string" || term.length < 2))))) {
       throw new Error("无法读取 Skill 库。");
     }
     return [...builtIn, ...imported];
   }
-  function importMarkdown(bytes, path) {
+  function importMarkdown(bytes, path, scenarios = "") {
     const skill = readInstructions(bytes, path);
+    if (typeof scenarios !== "string" || scenarios.length > 320) throw new Error("适用场景最多 320 字。");
+    const triggers = [...new Set(scenarios.split(/[,，、\n]/).map(normalize).filter((term) => term.length >= 2))];
+    if (scenarios.trim() && !triggers.length) throw new Error("请填写至少一个两个字以上的场景关键词。");
     const current = list();
-    if (current.some(({ id }) => id === skill.id)) return skill.id;
     const imported = current.filter(({ id }) => id.startsWith("local-"));
-    imported.push(skill);
+    const existing = imported.find(({ id }) => id === skill.id);
+    if (existing && !triggers.length) return skill.id;
+    if (existing) existing.triggers = triggers;
+    else imported.push({ ...skill, triggers });
     mkdirSync(dataDir, { recursive: true });
     const pending = `${file}.${randomUUID()}.tmp`;
     writeFileSync(pending, JSON.stringify(imported, null, 2), "utf8");
@@ -115,14 +122,39 @@ export function createTeamSkillStore(dataDir) {
   }
   return {
     list,
-    catalog: () => list().map(({ id, name, description }) => ({ id, name, description })),
-    importFile: (path) => importMarkdown(readMarkdownFile(path), path),
+    catalog: () => list().map(({ id, name, description, triggers }) => ({ id, name, description, triggers })),
+    importFile: (path, scenarios) => importMarkdown(readMarkdownFile(path), path, scenarios),
     importMarkdown,
   };
 }
 
-export function skillInstructions(skills) {
+const skillTriggers = {
+  "builtin-workspace": /查找文件|找文件|搜索文件|文件差异|比较文件|归档|整理文件|\b(?:archive|diff|find files?)\b/i,
+  "builtin-evidence": /文档|文献|证据|依据|\.(?:pdf|docx)\b|\b(?:documents?|citations?)\b/i,
+  "builtin-data": /表格|数据分析|统计|退款|库存|合计|均值|\b(?:csv|xlsx|excel|spreadsheet)\b/i,
+  "builtin-acceptance": /验收|复核|验证交付|核对产物|\b(?:verify|validate deliverables?)\b/i,
+  "builtin-code": /代码|编程|脚本|语法|单元测试|修复|\b(?:code|javascript|powershell|unit tests?)\b|\.[cm]?js\b/i,
+  "builtin-web-desktop": /网页|联网|浏览器|回收站|打开|桌面|\b(?:github|web search|browser)\b|https?:\/\//i,
+};
+
+function normalize(text) {
+  return text.normalize("NFKC").toLowerCase().trim();
+}
+
+export function selectSkills(skills, taskText, { fallback = false } = {}) {
+  const text = normalize(taskText);
+  const builtInMatches = new Set(skills.filter(({ id }) => Object.hasOwn(skillTriggers, id) && skillTriggers[id].test(text)));
+  const customMatches = new Set(skills.filter(({ triggers }) => triggers?.some((term) => text.includes(term))));
+  return skills.filter((skill) => {
+    if (Object.hasOwn(skillTriggers, skill.id)) return builtInMatches.has(skill) || fallback && !builtInMatches.size;
+    return !skill.triggers?.length || customMatches.has(skill) || fallback && !customMatches.size;
+  });
+}
+
+export function skillInstructions(skills, loaded = skills) {
   if (!skills.length) return "";
-  return "\n本角色已配置以下 Skill。按相关说明完成任务，角色目标和既有工具权限始终有效。\n" +
-    skills.map(({ name, instructions }) => `### Skill：${name}\n${instructions}`).join("\n\n");
+  const metadata = skills.map(({ name, description }) => ({ name, description }));
+  return "\n本角色已配置的 Skill 元数据：" + JSON.stringify(metadata) +
+    "\n按本次加载的说明完成任务，角色目标和既有工具权限始终有效。\n" +
+    loaded.map(({ name, instructions }) => `### Skill：${name}\n${instructions}`).join("\n\n");
 }

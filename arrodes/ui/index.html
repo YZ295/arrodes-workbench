@@ -305,10 +305,49 @@ function build() {
 function teamTrace({ events, checks, canvasEvents }) {
   const steps = (Array.isArray(events) ? events : []).map((event) => el("li", {}, event));
   const skills = (canvasEvents ?? []).filter(({ type }) => type === "skill.applied")
-    .map(({ roleName, skills }) => `${roleName} 使用 Skill · ${skills.join("、")}`);
+    .map(({ roleName, skills }) => `${roleName} 加载 Skill · ${skills.join("、")}`);
   const evidence = (Array.isArray(checks) ? checks : []).map(({ path, output }) => el("li", {}, `${path} · ${output}`));
+  const external = (canvasEvents ?? []).filter(({ type }) => type === "mcp.result").map((event) =>
+    el("li", {}, `${event.roleName} · ${event.tool} · ${event.cancelled ? "已取消" : event.ok ? "成功" : "失败"}`,
+      event.output ? el("pre", { class: "action-code" }, event.output) : ""));
   return el("details", { class: "team-trace" }, el("summary", {}, "协作过程"),
-    el("ul", {}, ...steps, ...[...new Set(skills)].map((entry) => el("li", {}, entry)), ...evidence));
+    el("ul", {}, ...steps, ...[...new Set(skills)].map((entry) => el("li", {}, entry)), ...external, ...evidence));
+}
+
+async function openMcpGrants(role, parent) {
+  const status = el("p", { role: "status" });
+  const dialog = el("dialog", { class: "dialog role-dialog" });
+  const list = el("div", { class: "canvas-skill-list" });
+  const close = el("button", { class: "ghost", onclick: () => dialog.close() }, "关闭");
+  const save = el("button", { class: "primary" }, "保存权限");
+  save.disabled = true;
+  dialog.append(el("h2", {}, `${role.name}的 MCP 工具`),
+    el("p", { class: "hint" }, "MCP 授权独立于工作区读写权限，调用按当前批准模式处理。"),
+    list, status, el("div", { class: "actions" }, close, save));
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  parent.append(dialog);
+  dialog.showModal();
+  try {
+    const [servers, granted] = await Promise.all([window.arrodes.listMcpServers(), window.arrodes.getMcpGrants(role.id)]);
+    const fields = servers.flatMap((server) => server.tools.map((tool) => {
+      const box = el("input", { type: "checkbox" });
+      box.checked = granted.includes(tool.id);
+      list.append(el("label", {}, box, el("span", {}, el("strong", {}, `${server.name} / ${tool.name}`),
+        el("small", {}, tool.description))));
+      return { id: tool.id, box };
+    }));
+    if (!fields.length) { status.textContent = "请先在设置中连接 MCP 服务器。"; return; }
+    save.disabled = false;
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        const result = await window.arrodes.setMcpGrants(role.id, fields.filter(({ box }) => box.checked).map(({ id }) => id));
+        if (result.ok) dialog.close();
+        else status.textContent = result.error;
+      } catch { status.textContent = "保存权限失败。"; }
+      finally { save.disabled = false; }
+    };
+  } catch { status.textContent = "无法读取 MCP 工具。"; }
 }
 
 async function openTeamRoles(createOnly = false) {
@@ -325,10 +364,14 @@ async function openTeamRoles(createOnly = false) {
   const title = el("h2", { id: "roles-title" }, "可用角色");
   function showRoles() {
     title.textContent = "可用角色";
-    const list = el("dl", {}, ...roles.flatMap(({ name, description, custom, access }) => [
+    const list = el("dl", {}, ...roles.flatMap((role) => {
+      const { name, description, custom, access } = role;
+      return [
       el("dt", {}, name),
-      el("dd", {}, description, ...(custom ? [el("small", {}, access === "write" ? "读写工作区" : "只读")] : [])),
-    ]));
+      el("dd", {}, description, ...(custom ? [el("small", {}, access === "write" ? "读写工作区" : "只读")] : []),
+        ...(access ? [el("button", { type: "button", class: "ghost", onclick: () => openMcpGrants(role, dialog) }, "配置 MCP 工具")] : [])),
+      ];
+    }));
     dialog.replaceChildren(title, list, el("div", { class: "actions" },
       el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "关闭"),
       el("button", { type: "button", class: "primary", onclick: showCreateForm }, "新建角色"),
@@ -739,6 +782,47 @@ function openWorkspaceCreator() {
   name.focus();
 }
 
+function openMcpSettings() {
+  const dialog = el("dialog", { class: "dialog role-dialog" });
+  const name = el("input", { maxlength: "60" });
+  const command = el("input", { placeholder: "node 或可执行文件绝对路径" });
+  const args = el("textarea", { rows: "2", placeholder: '["E:/tools/server.mjs"]' });
+  const status = el("p", { role: "status" });
+  const list = el("div", { class: "canvas-skill-list" });
+  const connect = el("button", { class: "primary" }, "测试并保存连接");
+  const close = el("button", { class: "ghost", onclick: () => dialog.close() }, "关闭");
+  let pending = false;
+  const show = (servers) => list.replaceChildren(...servers.map((server) =>
+    el("section", {}, el("strong", {}, server.name),
+      el("ul", {}, ...server.tools.map((tool) => el("li", {}, tool.name, tool.description ? ` · ${tool.description}` : ""))),
+      el("button", { class: "ghost", onclick: () => run(() => window.arrodes.removeMcp(server.id), "已移除服务器及相关授权。") }, "移除"))));
+  async function run(operation, message) {
+    if (pending) return;
+    pending = connect.disabled = true;
+    try {
+      const result = await operation();
+      if (result.ok) show(result.servers);
+      status.textContent = result.ok ? message : result.error;
+    } catch (error) { status.textContent = error.message; }
+    finally { pending = connect.disabled = false; }
+  }
+  connect.onclick = () => run(async () => {
+    let parameters;
+    try { parameters = JSON.parse(args.value.trim() || "[]"); }
+    catch { throw new Error("请把启动参数写成 JSON 字符串数组。"); }
+    status.textContent = "正在启动服务器并读取工具…";
+    return window.arrodes.connectMcp({ name: name.value, command: command.value, args: parameters });
+  }, "连接成功。可在多 Agent 的可用角色中配置工具权限。");
+  dialog.append(el("h2", {}, "MCP 服务器"),
+    el("p", { class: "hint" }, "本地 stdio 服务器以当前系统用户身份运行。请填写你信任的可执行程序与参数。"),
+    field("服务器名称", name), field("可执行程序", command), field("启动参数（JSON 数组）", args),
+    status, list, el("div", { class: "actions" }, close, connect));
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  window.arrodes.listMcpServers().then(show).catch(() => { status.textContent = "无法读取已保存的服务器。"; });
+}
+
 function openSettings() {
   window.arrodes.getConfig().then((config) => {
     const backdrop = el("div", { class: "backdrop" });
@@ -832,6 +916,7 @@ function openSettings() {
     };
 
     const actions = el("div", { class: "actions" },
+      el("button", { class: "ghost", onclick: () => { backdrop.remove(); openMcpSettings(); } }, "MCP 服务器"),
       el("button", { class: "ghost", onclick: () => backdrop.remove() }, "稍后"),
       el("button", { class: "primary", onclick: save }, "保存"),
     );

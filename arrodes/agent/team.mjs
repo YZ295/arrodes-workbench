@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { APP_CAPABILITY_BOUNDARIES, describeTurnTools, requestModel, runAgentTurn, safePath, verifyWorkspaceFile, READ_TOOL_NAMES, WORKSPACE_TOOL_NAMES } from "./loop.mjs";
 import { applyCanvasDependencies, validateCanvas } from "./team-canvas.mjs";
-import { skillInstructions, TEAM_COORDINATION_SKILL } from "./team-skills.mjs";
+import { selectSkills, skillInstructions, TEAM_COORDINATION_SKILL } from "./team-skills.mjs";
 
 const bundle = new URL("./collab-runtime.mjs", import.meta.url);
 const runtimeModule = existsSync(bundle) ? bundle : new URL("../../apps/server/dist/collab/runtime.js", import.meta.url);
@@ -21,9 +21,9 @@ export function getTeamRoles(customRoles = []) {
   return [...builtIn, ...customRoles.map((role) => ({ ...role, custom: true }))];
 }
 
-async function ask(config, stage, instructions, input, skills = []) {
+async function ask(config, stage, instructions, input, skillContext) {
   const { message, error } = await requestModel(config, [
-    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillInstructions(skills)}\n${describeTurnTools([])}\n团队的调研和执行角色可以按关键词搜索网页或 GitHub 公开仓库，并读取网页核实。用户要查找资料时，可分配调研任务，requiredInputs 和 outputs 可为空，不要求用户先给链接。桌面启动可由读写执行角色申请用户确认。` },
+    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillContext}\n${describeTurnTools([])}\n团队的调研和执行角色可以按关键词搜索网页或 GitHub 公开仓库，并读取网页核实。用户要查找资料时，可分配调研任务，requiredInputs 和 outputs 可为空，不要求用户先给链接。桌面启动可由读写执行角色申请用户确认。` },
     { role: "user", content: input },
   ]);
   if (error) throw new Error(error);
@@ -124,7 +124,7 @@ function describeEvent(event, labels) {
   }
 }
 
-export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult }) {
+export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult, mcpForRole }) {
   const catalog = getTeamRoles(customRoles);
   let graph;
   try {
@@ -143,9 +143,16 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
       : configured;
   };
   const skillNames = (id) => skillsOf(id).map(({ name }) => name);
+  const skillContext = (roleId, taskText) => {
+    const configured = skillsOf(roleId);
+    const loaded = selectSkills(configured, taskText, { fallback: true });
+    return { loaded, instructions: skillInstructions(configured, loaded) };
+  };
+  const coordinatorSkills = skillContext("coordinator", text);
   const selected = graph?.configured ? new Set(graph.nodes.map(({ id }) => id)) : null;
   const workers = catalog.filter(({ id, access }) => Object.hasOwn(toolsByAccess, access) && (!selected || selected.has(id)));
   const workerProfiles = new Map(workers.map((profile) => [profile.id, profile]));
+  const workerMcp = new Map(workers.map(({ id }) => [id, approveAction ? mcpForRole?.(id) ?? [] : []]));
   const roleList = catalog.map(({ name, description }) => `${name}：${description}`).join("\n");
   onProgress?.("协调者正在理解请求");
   let plan;
@@ -167,9 +174,10 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
       `当前工作区：${workspaceDir ?? "暂不可用"}`,
     ].join("\n"), JSON.stringify({
       goal: text, history, workspaceEntries: workspaceEntries(workspaceDir),
-      roles: workers.map((worker) => ({ ...worker, skills: skillNames(worker.id) })),
+      roles: workers.map((worker) => ({ ...worker, skills: skillNames(worker.id),
+        mcpTools: workerMcp.get(worker.id).map(({ label }) => label) })),
       handoffs: (graph?.edges ?? []).filter(({ from, to }) => workerProfiles.has(from) && workerProfiles.has(to)),
-    }), skillsOf("coordinator")));
+    }), coordinatorSkills.instructions));
     if (plan?.action === "roles") return { kind: "reply", text: roleList };
     if (plan?.action === "role_help") {
       return { kind: "reply", text: "我不能在对话里替你创建 Agent。需要你在「多 Agent」页面点击「新建 Agent」并保存。你可以告诉我想让它做什么，我可以帮你拟好名称、职责和建议权限。" };
@@ -227,10 +235,11 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
         const result = await verifyWorkspaceFile(workspaceDir, path);
         checks.push({ path, ...result });
       }
-      reportSkills("reviewer", task.taskId);
+      const reviewSkills = skillContext("reviewer", text);
+      reportSkills("reviewer", task.taskId, reviewSkills.loaded);
       const verdict = readObject(await ask(config, "验收",
         "独立验收交付。根据目标、上游结果和实际文件检查，只返回 {\"passed\":true或false,\"reason\":\"验收结论\"}。缺证据或检查失败时拒绝。",
-        JSON.stringify({ goal: text, requirements: tasks.map(({ id, goal, acceptance }) => ({ id, goal, acceptance })), upstream, checks }), skillsOf("reviewer")));
+        JSON.stringify({ goal: text, requirements: tasks.map(({ id, goal, acceptance }) => ({ id, goal, acceptance })), upstream, checks }), reviewSkills.instructions));
       if (typeof verdict?.passed !== "boolean" || typeof verdict.reason !== "string") throw new Error("验收结果无法读取。");
       return {
         artifacts: [{ taskId: review, kind: "note", ref: review, summary: verdict.reason }],
@@ -245,15 +254,26 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
     const files = writes.get(task.taskId) ?? new Set();
     writes.set(task.taskId, files);
     const failedWrites = new Set();
-    reportSkills(roleId, task.taskId);
+    const taskSkills = skillContext(roleId, [
+      original.title, task.deliverable, original.acceptance, ...original.requiredInputs, ...original.outputs,
+    ].join("\n"));
+    const mcpTools = workerMcp.get(roleId) ?? [];
+    const mcpLabels = new Map(mcpTools.map(({ definition, label }) => [definition.function.name, label]));
+    reportSkills(roleId, task.taskId, taskSkills.loaded);
     const result = await runAgentTurn({
       text: JSON.stringify({ goal: text, assignment: task.deliverable, requiredInputs: original.requiredInputs, outputs: original.outputs, acceptance: original.acceptance, upstream, assist: requests.get(task.assistFor) }),
       history: [], workspaceDir, config, onProgress, approveAction, openItem, launchDesktop, onToolResult,
       collaboration: {
-        stage, instructions: `角色：${profile.name}\n职责：${profile.description}\n只完成分给你的子任务，使用交接材料。返回实际交付与依据；缺必要信息时请求协助。${skillInstructions(skillsOf(roleId))}`,
+        stage, instructions: `角色：${profile.name}\n职责：${profile.description}\n只完成分给你的子任务，使用交接材料。返回实际交付与依据；缺必要信息时请求协助。${taskSkills.instructions}`,
         tools: task.assistFor ? readTools : toolsByAccess[profile.access],
+        mcpTools,
         onAssist: task.assistFor ? undefined : (request) => { requests.set(task.taskId, request); requestAssist(request); },
         onToolResult: (tool, { path }, outcome) => {
+          if (mcpLabels.has(tool)) {
+            sendCanvas({ type: "mcp.result", taskId: task.taskId, roleId, roleName: profile.name,
+              tool: mcpLabels.get(tool), ok: outcome.ok, cancelled: outcome.cancelled === true,
+              output: outcome.output });
+          }
           if (!FILE_WRITING_TOOLS.has(tool)) return;
           if (outcome.ok) { files.add(path); failedWrites.delete(path); }
           else failedWrites.add(path);
@@ -290,8 +310,8 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
     canvasEvents.push(event);
     onCanvasEvent?.(event);
   };
-  const reportSkills = (roleId, taskId) => {
-    const names = skillNames(roleId);
+  const reportSkills = (roleId, taskId, loaded) => {
+    const names = loaded.map(({ name }) => name);
     if (names.length) sendCanvas({ type: "skill.applied", taskId, roleId, skills: names,
       roleName: catalog.find(({ id }) => id === roleId)?.name });
   };
@@ -304,7 +324,7 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
           const roleId = roleOf(taskId);
           return { taskId, roleId, title: labels.get(taskId), dependsOn, skills: skillNames(roleId) };
         }) });
-        reportSkills("coordinator");
+        reportSkills("coordinator", undefined, coordinatorSkills.loaded);
         break;
       case "task.assigned": {
         const to = roleOf(event.taskId);
@@ -344,7 +364,7 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
   let summary;
   try {
     summary = await ask(config, "汇总", "汇总真实交付。指出文件和实际验收范围。",
-      JSON.stringify({ goal: text, tasks: records, checks }), skillsOf("coordinator"));
+      JSON.stringify({ goal: text, tasks: records, checks }), coordinatorSkills.instructions);
   } catch {
     summary = "团队任务已完成，验收通过。";
   }

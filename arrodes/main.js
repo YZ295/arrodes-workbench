@@ -12,8 +12,9 @@ import { listAvailableModels, resolveModelConnection, testModelConnection } from
 import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
 import { createTeamRoleStore } from "./agent/team-roles.mjs";
 import { createTeamCanvasStore } from "./agent/team-canvas.mjs";
-import { createTeamSkillStore, validateSkillIds, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
+import { createTeamSkillStore, validateSkillIds, selectSkills, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
 import { fetchGithubSkill } from "./agent/github-skills.mjs";
+import { createMcpToolStore } from "./agent/mcp-tools.mjs";
 import { createWorkspaceStore, existingDirectory } from "./agent/workspaces.mjs";
 
 /**
@@ -31,6 +32,7 @@ const workspaces = createWorkspaceStore(DATA_DIR);
 const teamRoles = createTeamRoleStore(DATA_DIR);
 const teamCanvases = createTeamCanvasStore(DATA_DIR);
 const teamSkills = createTeamSkillStore(DATA_DIR);
+const mcpTools = createMcpToolStore(DATA_DIR);
 
 let win = null;
 let conversation;
@@ -175,6 +177,35 @@ ipcMain.handle("workspaces:open", async (_event, id) => {
 ipcMain.handle("chat:get", () => conversation);
 ipcMain.handle("chat:roles", () => getTeamRoles(teamRoles.list()));
 
+function requireIdle() {
+  if (turnRunning) throw new Error("请在当前任务结束后修改 MCP 配置。");
+}
+
+ipcMain.handle("mcp:list", () => mcpTools.list());
+ipcMain.handle("mcp:connect", async (_event, input) => {
+  try {
+    requireIdle();
+    return { ok: true, servers: await mcpTools.connect(input, requireIdle) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle("mcp:remove", (_event, id) => {
+  try {
+    requireIdle();
+    return { ok: true, servers: mcpTools.remove(id) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle("mcp:grants", (_event, roleId) => mcpTools.grants(roleId));
+ipcMain.handle("mcp:setGrants", (_event, roleId, ids) => {
+  try {
+    requireIdle();
+    if (!getTeamRoles(teamRoles.list()).some(({ id, access }) => id === roleId && access)) {
+      throw new Error("请选择一个可执行任务的角色。");
+    }
+    mcpTools.setGrants(roleId, ids);
+    return { ok: true };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+
 ipcMain.handle("canvas:get", (_event, workspaceId) => {
   if (!workspaces.get(workspaceId)) throw new Error("找不到工作区。");
   return { graph: teamCanvases.get(workspaceId), roles: getTeamRoles(teamRoles.list()), skills: teamSkills.catalog() };
@@ -190,27 +221,28 @@ ipcMain.handle("canvas:save", (_event, workspaceId, graph) => {
   }
 });
 
-ipcMain.handle("canvas:importSkill", async () => {
+ipcMain.handle("canvas:importSkill", async (_event, scenarios) => {
   try {
     if (turnRunning) throw new Error("协作结束后可导入 Skill。");
     const result = await dialog.showOpenDialog(win, {
       title: "导入 SKILL.md", properties: ["openFile"], filters: [{ name: "Markdown", extensions: ["md"] }],
     });
     if (result.canceled) return { ok: true };
-    const id = teamSkills.importFile(result.filePaths[0]);
+    if (turnRunning) throw new Error("协作已开始，请在结束后重新导入。");
+    const id = teamSkills.importFile(result.filePaths[0], scenarios);
     return { ok: true, id, skills: teamSkills.catalog() };
   } catch (error) {
     return { ok: false, error: error.message };
   }
 });
 
-ipcMain.handle("canvas:importGithubSkill", async (_event, link) => {
+ipcMain.handle("canvas:importGithubSkill", async (_event, link, scenarios) => {
   try {
     if (turnRunning) throw new Error("协作结束后可导入 Skill。");
     const result = await fetchGithubSkill(link, (url, options) => net.fetch(url, options));
     if (result.choices) return { ok: true, choices: result.choices };
     if (turnRunning) throw new Error("协作已开始，请在结束后重新导入。");
-    const id = teamSkills.importMarkdown(result.bytes, result.path);
+    const id = teamSkills.importMarkdown(result.bytes, result.path, scenarios);
     return { ok: true, id, skills: teamSkills.catalog() };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -335,6 +367,12 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => 
     }
     let result;
     const executions = [];
+    let approvalQueue = Promise.resolve();
+    const approveAction = (request) => {
+      const approval = approvalQueue.then(() => approveOperation(approvalMode, request, (pending) => requestApproval(sender, pending)));
+      approvalQueue = approval.catch(() => {});
+      return approval;
+    };
     try {
       const run = mode === "team" ? runTeamTurn : runAgentTurn;
       result = await run({
@@ -346,10 +384,12 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => 
         customRoles: mode === "team" ? teamRoles.list() : [],
         canvas: mode === "team" ? teamCanvases.get(conversation.workspaceId) : null,
         skills: mode === "team" ? teamSkills.list() : [],
-        instructions: mode === "team" ? "" : skillInstructions(BASIC_AGENT_SKILLS),
+        mcpForRole: mode === "team" ? (roleId) => mcpTools.forRole(roleId) : undefined,
+        instructions: mode === "team" ? "" : skillInstructions(BASIC_AGENT_SKILLS,
+          selectSkills(BASIC_AGENT_SKILLS, mode === "creator" ? `项目代码\n${input}` : input)),
         openItem: (path) => shell.openPath(path),
         launchDesktop: (target) => launchWindowsDesktop(target, (url) => shell.openExternal(url)),
-        approveAction: (request) => approveOperation(approvalMode, request, (pending) => requestApproval(sender, pending)),
+        approveAction,
         onToolResult: (tool, outcome) => {
           if (tool === "run_powershell" && executions.length < 24) {
             executions.push({

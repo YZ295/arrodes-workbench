@@ -232,6 +232,9 @@ export async function runAgentTurn({ text, history, workspaceDir, config, onProg
   const tools = TOOLS.filter(({ function: { name } }) =>
     (!collaboration || collaboration.tools.includes(name)) && (!creator || creatorTools.has(name)) && (name !== "open_desktop" || typeof launchDesktop === "function")
     && (name !== "run_powershell" || process.platform === "win32" && typeof approveAction === "function"));
+  const external = new Map((typeof approveAction === "function" ? collaboration?.mcpTools ?? [] : [])
+    .map((tool) => [tool.definition.function.name, tool]));
+  tools.push(...Array.from(external.values(), ({ definition }) => definition));
   const allowed = new Set(tools.map(({ function: tool }) => tool.name));
   const context = { safePath, approveAction, openItem, launchDesktop, verifyWorkspaceFile };
   const direct = !collaboration && !creator && directDesktopRequest(text);
@@ -271,10 +274,18 @@ export async function runAgentTurn({ text, history, workspaceDir, config, onProg
           [args.needs, args.missingInput, args.expected].every((value) => typeof value === "string" && value.trim())) {
           collaboration.onAssist(args);
         }
-        onProgress?.(`调用工具 ${name}`);
+        const mcp = external.get(name);
+        onProgress?.(`调用工具 ${mcp?.label ?? name}`);
         let result;
         try {
           if (!allowed.has(name)) result = { ok: false, output: "工具不可用或参数无效" };
+          else if (mcp) {
+            const approved = await approveAction({
+              risk: "elevated", action: "调用 MCP 工具",
+              detail: `${mcp.label}\n${JSON.stringify(args, null, 2)}`,
+            });
+            result = approved ? await mcp.call(args) : { ok: false, cancelled: true, output: "用户取消了调用。" };
+          }
           else if (creator && name === "write_file") result = await editSource(workspaceDir, args, safePath, approveAction);
           else if (BASIC_TOOL_NAMES.includes(name)) result = await executeBasicTool(name, args, workspaceDir, context);
           else result = await executeTool(name, args, workspaceDir);

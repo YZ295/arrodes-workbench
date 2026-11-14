@@ -54,10 +54,18 @@ function teamReply(messages, tools) {
         { id: 'prepare', role: reviewer.id, requiredInputs: [], requiredAccess: 'read', acceptance: '交付与目标一致', title: '准备资料', goal: '给出可交接的资料', dependsOn: [] },
       ] }));
     }
-    if (stage === '协作阶段：调研') return assistant('画布交接：函数应返回 42。');
+    if (stage === '协作阶段：调研') {
+      assert.ok(!tools.some(({ function: tool }) => tool.name.startsWith('mcp_')));
+      return assistant('画布交接：函数应返回 42。');
+    }
     if (stage === '协作阶段：执行') {
       assert.match(JSON.stringify(payload.upstream), /画布交接/);
-      return messages.some(({ role }) => role === 'tool')
+      const mcp = tools.find(({ function: tool }) => tool.name.startsWith('mcp_'));
+      assert.ok(mcp);
+      const results = messages.filter(({ role }) => role === 'tool');
+      if (!results.length) return toolCall(mcp.function.name, {});
+      assert.equal(JSON.parse(results[0].content).output, '425.76');
+      return results.length > 1
         ? assistant('已生成 canvas.js')
         : toolCall('write_file', { path: 'canvas.js', content: 'module.exports = () => 42;\n' });
     }
@@ -134,7 +142,8 @@ function teamReply(messages, tools) {
   }
 }
 
-test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 75000 }, async () => {
+// The suite includes multiple Electron launches and real filesystem and shell operations.
+test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 180000 }, async () => {
   const profile = await mkdtemp(join(tmpdir(), 'arrodes-stage-a-'));
   const outside = await mkdtemp(join(process.env.ARRODES_TEST_WORKSPACE_ROOT || tmpdir(), 'arrodes-folder-'));
   const existingFolder = join(outside, '现有文件夹');
@@ -546,6 +555,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await creator.getByLabel('角色名称').fill('资料搭档');
     await creator.getByLabel('职责').fill('为执行 Agent 准备任务资料。');
     await creator.getByText('Skill（可选）', { exact: true }).click({ timeout: 3000 });
+    await creator.getByLabel(/适用场景/).fill('准备资料，材料整理');
     await creator.getByRole('textbox', { name: 'GitHub 地址' }).fill('https://github.com/example/skills');
     await creator.getByRole('button', { name: '导入 GitHub' }).click();
     await creator.getByLabel('选择 Skill').selectOption({ label: 'prepare/SKILL.md' });
@@ -591,6 +601,25 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await editor.getByRole('button', { name: '保存', exact: true }).click();
     await editor.waitFor({ state: 'hidden' });
 
+    await restored.getByRole('button', { name: '设置', exact: true }).click();
+    await restored.getByRole('button', { name: 'MCP 服务器', exact: true }).click();
+    const mcpSettings = restored.getByRole('dialog').filter({ hasText: 'MCP 服务器' });
+    await mcpSettings.getByLabel('服务器名称').fill('退款服务');
+    await mcpSettings.getByLabel('可执行程序').fill(process.execPath);
+    await mcpSettings.getByLabel(/启动参数/).fill(JSON.stringify([join(__dirname, 'mcp-fixture.mjs')]));
+    await mcpSettings.getByRole('button', { name: '测试并保存连接' }).click();
+    await mcpSettings.getByText(/audit_total/).waitFor();
+    await mcpSettings.getByRole('button', { name: '关闭', exact: true }).click();
+    await restored.getByRole('button', { name: '可用角色' }).click();
+    const roles = restored.getByRole('dialog', { name: '可用角色' });
+    await roles.getByRole('definition').filter({ hasText: '在工作区读写文件，并检查 JavaScript 语法。' })
+      .getByRole('button', { name: '配置 MCP 工具' }).click();
+    const grants = restored.getByRole('dialog').filter({ hasText: '执行 Agent的 MCP 工具' }).last();
+    await grants.getByRole('checkbox', { name: /audit_total/ }).check();
+    await grants.getByRole('button', { name: '保存权限' }).click();
+    await grants.waitFor({ state: 'hidden' });
+    await roles.getByRole('button', { name: '关闭', exact: true }).click();
+
     await restored.evaluate(() => {
       window.flights = [];
       new MutationObserver((changes) => {
@@ -603,7 +632,13 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     });
     await restored.locator('#input').fill(canvasGoal);
     await restored.getByRole('button', { name: '开始协作' }).click();
+    const mcpApproval = restored.getByRole('dialog', { name: '调用 MCP 工具' });
+    await mcpApproval.getByText(/退款服务 \/ audit_total/).waitFor();
+    await mcpApproval.getByRole('button', { name: '允许本次' }).click();
     await restored.locator('.bubble.assistant').filter({ hasText: '画布协作完成。' }).waitFor();
+    const trace = restored.locator('.team-trace').last();
+    await trace.getByText('协作过程', { exact: true }).click();
+    await trace.getByText('425.76', { exact: true }).waitFor();
     const sourceId = await move.evaluate((node) => node.closest('[data-agent]').dataset.agent);
     const flights = await restored.evaluate(() => window.flights);
     assert.equal(flights.filter(([from, to]) => from === sourceId && to === 'execute').length, 1);
@@ -638,6 +673,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     assert.equal(await replaySkills.getByRole('checkbox', { name: /implement-skill/ }).isChecked(), false);
     const savedTrace = await replay.evaluate(async () => JSON.stringify(await window.arrodes.getConversation()));
     assert.ok(savedTrace.includes('prepare-skill') && savedTrace.includes('implement-skill'));
+    assert.ok(savedTrace.includes('mcp.result') && savedTrace.includes('425.76'));
     assert.ok(!savedTrace.includes('PREPARE_SKILL_ONLY') && !savedTrace.includes('IMPLEMENT_SKILL_ONLY'));
     await replaySkills.getByRole('button', { name: '取消', exact: true }).click();
     const current = await replay.evaluate(() => window.arrodes.getConversation());
