@@ -74,13 +74,15 @@ export function createTeamCanvasStore(dataDir) {
   };
 }
 
+// 条件语义：连线只在两端角色都实际参与本计划时生效（作为交接顺序），与任务无关的连线自动忽略。
 export function applyCanvasDependencies(tasks, edges) {
+  const byRole = Map.groupBy(tasks, ({ role }) => role);
   return tasks.map((task) => {
     const dependsOn = new Set(task.dependsOn);
     for (const { from, to } of edges) {
       if (task.role !== to || from === "coordinator") continue;
-      const upstream = tasks.filter(({ role }) => role === from);
-      if (!upstream.length) throw new Error("分工缺少画布连线要求的上游 Agent，请重试。");
+      const upstream = byRole.get(from);
+      if (!upstream?.length) continue;
       for (const { id } of upstream) dependsOn.add(id);
     }
     return { ...task, dependsOn: [...dependsOn] };

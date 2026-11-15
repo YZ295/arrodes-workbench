@@ -218,7 +218,8 @@ const state = {
   creator: false,
   approvalMode: "ask",
   switching: false,
-  busy: false,
+  turn: null,
+  get busy() { return this.turn !== null; },
   ready: false,
   configured: false,
   notice: "",
@@ -260,6 +261,9 @@ function build() {
   const container = el("main", { class: "chat-pane" });
   const frame = el("div", { class: "app-frame" }, sidebar(), container);
   const team = state.view === "collaboration";
+  const turn = state.turn?.id === state.conversationId ? state.turn : null;
+  const history = turn ? [...state.history, { role: "user", content: turn.text }] : state.history;
+  if (state.ready) teamCanvas.sync(state.workspace, state.conversationId, state.history, state.busy, turn?.events);
   if (team) {
     container.append(el("header", { class: "team-header" },
       el("h1", {}, "多 Agent"),
@@ -268,19 +272,18 @@ function build() {
         el("button", { class: "tool", type: "button", onclick: returnToChat }, "返回对话"),
       ),
     ));
-    teamCanvas.sync(state.workspace, state.conversationId, state.history, state.busy);
     container.append(teamCanvas.root);
   }
 
   if (state.notice) container.append(el("p", { class: "bubble error", role: "alert" }, state.notice));
 
-  if (!team && state.history.length === 0) {
+  if (!team && history.length === 0) {
     const hero = el("div", { class: "hero" }, el("div", { class: "logo-lg" }), el("h1", {}, "今天想做什么？"));
     hero.append(composer());
     container.append(hero);
   } else {
     const thread = el("div", { class: team ? "thread team-thread" : "thread", id: "thread" });
-    for (const bubble of state.history) {
+    for (const bubble of history) {
       const message = el("div", { class: `bubble ${bubble.role}` });
       if (bubble.role === "assistant") {
         const formatted = el("div", { class: "message-markdown" });
@@ -290,10 +293,18 @@ function build() {
         message.textContent = bubble.content;
       }
       if (bubble.collaboration) message.append(teamTrace(bubble.collaboration));
-      for (const execution of bubble.executions ?? []) message.append(executionCard(execution));
+      if (bubble === state.history.at(-1) && bubble.clarification && !state.archived) {
+        message.append(clarificationCard(bubble.clarification, bubble.content));
+      }
+      if (bubble.executions?.length) {
+        const failures = bubble.executions.filter(({ ok, cancelled }) => !ok && !cancelled).length;
+        const count = `${bubble.executions.length} 条${failures ? `，${failures} 项失败` : ""}`;
+        message.append(el("details", { class: "team-trace" },
+          el("summary", {}, `执行记录（${count}）`), ...bubble.executions.map(executionCard)));
+      }
       thread.append(message);
     }
-    if (state.progress) thread.append(el("div", { class: "bubble progress" }, state.progress));
+    if (turn?.progress) thread.append(el("div", { class: "bubble progress" }, turn.progress));
     container.append(thread);
     const bottom = el("div", { class: "composer" });
     bottom.append(composer());
@@ -312,6 +323,23 @@ function teamTrace({ events, checks, canvasEvents }) {
       event.output ? el("pre", { class: "action-code" }, event.output) : ""));
   return el("details", { class: "team-trace" }, el("summary", {}, "协作过程"),
     el("ul", {}, ...steps, ...[...new Set(skills)].map((entry) => el("li", {}, entry)), ...external, ...evidence));
+}
+
+function clarificationCard({ id, question, options }, message) {
+  const button = (label, control) => {
+    const node = el("button", { type: "button", class: "ghost", onclick: () => send({ id, ...control }, label) }, label);
+    node.disabled = state.busy || state.switching;
+    return node;
+  };
+  return el("section", { class: "execution-card", "aria-label": "待确认任务" },
+    ...(question === message ? [] : [el("p", {}, question)]),
+    ...options.map(({ label, task, inputs, outputs }, index) => el("div", {},
+      el("p", { class: "hint" }, [
+        task, inputs.length ? `源文件 ${inputs.join("、")}` : "", outputs.length ? `交付 ${outputs.join("、")}` : "",
+      ].filter(Boolean).join(" · ")),
+      button(label, { index }))),
+    el("p", { class: "hint" }, "补充细节时，在输入框以「补充：」开头。"),
+    button("取消", { cancel: true }));
 }
 
 async function openMcpGrants(role, parent) {
@@ -448,17 +476,18 @@ function icon(name) {
 }
 
 function sidebar() {
-  const unavailable = state.busy || state.switching;
+  const unavailable = state.switching;
   const makeButton = (attrs, ...children) => {
     const button = el("button", { type: "button", ...attrs }, ...children);
-    button.disabled = unavailable;
+    button.disabled ||= unavailable;
     return button;
   };
   const sessionButton = (session, section) => el("div", { class: "session-row" }, makeButton({
     class: "nav-button", id: `${section}-${session.id}`, title: session.title,
     "aria-current": String(state.view === "chat" && session.id === state.conversationId),
     onclick: () => switchConversation(() => window.arrodes.openConversation(session.id)),
-  }, icon("chat"), el("span", {}, session.title)), makeButton({
+  }, icon("chat"), el("span", {}, state.turn?.id === session.id ? `${session.title} · 执行中` : session.title)), makeButton({
+    ...(state.busy ? { disabled: "" } : {}),
     class: "icon-button session-action",
     "aria-label": `${session.archived ? "恢复" : "归档"}会话：${session.title}`,
     title: session.archived ? "恢复会话" : "归档会话",
@@ -552,7 +581,7 @@ async function setArchived(id, archived) {
 }
 
 async function switchConversation(action) {
-  if (state.busy || state.switching) return;
+  if (state.switching) return;
   state.switching = true;
   state.notice = "";
   try {
@@ -599,7 +628,7 @@ function workspacePicker() {
     el("span", {}, el("span", { class: "workspace-label" }, workspaceLabel(workspace)), el("span", { class: "workspace-path" }, workspace.path)));
   });
   const picker = el("details", { class: "workspace-picker", id: "workspace-picker" }, trigger, el("div", { class: "workspace-options" }, ...options));
-  trigger.addEventListener("click", (event) => { if (state.busy || state.switching) event.preventDefault(); });
+  trigger.addEventListener("click", (event) => { if (state.switching) event.preventDefault(); });
   picker.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !picker.open) return;
     event.preventDefault();
@@ -658,7 +687,9 @@ function composer() {
     }
   });
 
-  const sendButton = el("button", { class: "send", id: "send" }, state.busy ? "执行中…" : team ? "开始协作" : "发送");
+  const sendButton = el("button", { class: "send", id: "send" }, state.busy
+    ? state.turn.id === state.conversationId ? "执行中…" : "另一会话执行中"
+    : team ? "开始协作" : "发送");
   sendButton.disabled = !state.ready || state.busy || (team && teamCanvas.pending);
   sendButton.addEventListener("click", send);
 
@@ -681,25 +712,25 @@ function composer() {
   return box;
 }
 
-async function send() {
-  const text = (state.draft ?? "").trim();
+async function send(confirmation, answer) {
+  const text = (answer ?? state.draft ?? "").trim();
   if (!text || state.archived || state.busy || state.switching || !state.ready ||
       (state.view === "collaboration" && teamCanvas.pending)) return;
-  if (!state.configured) {
+  if (!state.configured && !(answer && confirmation?.cancel)) {
     openSettings();
     return;
   }
   const mode = state.view === "collaboration" ? "team" : state.creator ? "creator" : "chat";
-  state.busy = true;
+  const turn = { id: state.conversationId, text, history: state.history, events: [] };
+  state.turn = turn;
   state.draft = "";
-  state.progress = null;
   state.notice = "";
-  state.history.push({ role: "user", content: text });
   render();
 
   let result;
   try {
-    result = await window.arrodes.send({ text, mode, approvalMode: state.approvalMode });
+    result = await window.arrodes.send({ text, mode, approvalMode: state.approvalMode, conversationId: turn.id,
+      confirmation: answer ? confirmation : undefined });
     if (result.kind !== "need_config" && result.kind !== "unavailable") {
       state.sessions = await window.arrodes.listConversations().catch(() => state.sessions);
     }
@@ -707,10 +738,10 @@ async function send() {
     result = { kind: "error", text: "消息处理失败，请重试。" };
   }
 
+  state.turn = null;
+  if (state.conversationId !== turn.id) { render(); return; }
   if (result.kind === "need_config" || result.kind === "unavailable") {
-    state.busy = false;
     state.draft = text;
-    state.history.pop();
     if (result.kind === "unavailable") state.notice = result.text;
     else state.configured = false;
     render();
@@ -718,9 +749,9 @@ async function send() {
     return;
   }
 
-  state.history.push({ role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration, executions: result.executions });
-  state.busy = false;
-  state.progress = null;
+  state.history = [...turn.history, { role: "user", content: text },
+    { role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration,
+      executions: result.executions, clarification: result.clarification }];
   render();
   document.getElementById("input")?.focus();
 }
@@ -979,13 +1010,16 @@ window.arrodes.onApprovalClosed((id) => {
 });
 
 window.arrodes.onProgress((payload) => {
-  state.progress = payload.line;
+  if (state.turn?.id !== payload.conversationId) return;
+  state.turn.progress = payload.line;
+  if (state.conversationId !== payload.conversationId) return;
   const thread = document.getElementById("thread");
   const progressNode = thread?.querySelector(".bubble.progress");
   if (progressNode) progressNode.textContent = payload.line;
   else render();
 });
 window.arrodes.onCanvasEvent(({ conversationId, event }) => {
+  if (state.turn?.id === conversationId) state.turn.events.push(event);
   if (conversationId === state.conversationId) teamCanvas.receive(event);
 });
 

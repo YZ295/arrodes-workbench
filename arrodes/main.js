@@ -1,4 +1,5 @@
 import { approveOperation } from "./agent/approval-policy.mjs";
+import { pendingClarification, resolveClarification } from "./agent/clarification.mjs";
 import { isArrodesSource } from "./agent/creator-mode.mjs";
 import { launchWindowsDesktop } from "./agent/desktop-launch.mjs";
 import { app, BrowserWindow, dialog, Menu, ipcMain, net, safeStorage, shell } from "electron";
@@ -297,7 +298,7 @@ ipcMain.handle("chat:list", () => loadConversations().map(({ id, workspaceId, wo
 })));
 
 ipcMain.handle("chat:open", (_event, id) => {
-  if (turnRunning) throw new Error("请等当前消息处理完成。");
+  if (conversation.id === id) return conversation;
   const saved = loadConversations().find((entry) => entry.id === id);
   if (!saved) throw new Error("找不到这段会话。");
   if (saved.archived === true) conversation = saved;
@@ -316,7 +317,6 @@ ipcMain.handle("chat:archive", (_event, id, archived) => {
 });
 
 ipcMain.handle("chat:new", (_event, workspaceId) => {
-  if (turnRunning) throw new Error("请等当前消息处理完成。");
   conversation = newConversation(workspaceId);
   return conversation;
 });
@@ -347,21 +347,52 @@ ipcMain.handle("chat:approve", ({ sender }, { id, approved }) => {
   if (entry?.sender === sender) entry.finish(approved === true);
 });
 
-ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => {
+ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conversationId, confirmation }) => {
+  if (conversationId && conversationId !== conversation.id) return { kind: "unavailable", text: "会话已切换，请重新发送。" };
   if (conversation.archived === true) return { kind: "unavailable", text: "恢复会话后即可继续发送。" };
-  const config = loadConfig();
-  if (!config?.apiKey || config.apiKey === "(kept)") {
-    return { kind: "need_config", text: "先连接模型：点左下角设置，填接口地址和 Key。" };
-  }
   if (turnRunning) return { kind: "error", text: "上一条消息仍在处理。" };
   const input = String(text ?? "").trim();
   if (!input) return { kind: "error", text: "请输入一条消息。" };
 
+  const origin = conversation;
+  const pending = origin.history.at(-1)?.clarification;
+  const greeting = !confirmation && /^(?:你好|您好|嗨|哈喽|早上好|下午好|晚上好|hi|hey|hello)[\s！!。,.，~～]*$/iu.test(input);
+  if (greeting) {
+    const result = { kind: "reply", text: "你好！", clarification: pending };
+    saveConversation({ ...origin, history: [
+      ...origin.history, { role: "user", content: input },
+      { role: "assistant", content: result.text, clarification: pending },
+    ] });
+    return result;
+  }
+  let confirmed;
+  try {
+    confirmed = resolveClarification(pending, input, confirmation);
+  } catch (error) {
+    return { kind: "unavailable", text: error.message };
+  }
+  if (confirmed?.cancelled) {
+    const result = { kind: "reply", text: "已取消这项待确认任务。" };
+    saveConversation({ ...origin, history: [
+      ...origin.history, { role: "user", content: "取消" }, { role: "assistant", content: result.text },
+    ] });
+    return result;
+  }
+  const config = loadConfig();
+  if (!config?.apiKey || config.apiKey === "(kept)") {
+    return { kind: "need_config", text: "先连接模型：点左下角设置，填接口地址和 Key。" };
+  }
+  const taskText = confirmed?.text ?? input;
+  mode = confirmed?.mode ?? mode;
+  // 澄清回退：确认问题的自由回复匹配不上选项时，把问题与选项带给规划器重新解释
+  const clarifyFollowUp = pending && !confirmed && !confirmation
+    ? { question: pending.question, options: pending.options } : null;
   turnRunning = true;
   try {
-    const workspace = workspaces.get(conversation.workspaceId);
+    const workspace = workspaces.get(origin.workspaceId);
     const workspaceDir = workspace?.available ? workspace.path : null;
     if (mode !== "team" && !workspaceDir) return { kind: "unavailable", text: "工作区位置不可用，请检查文件夹或磁盘。" };
+    if (!origin.history.length) writeConversation(origin);
     if (mode === "creator" && !await isArrodesSource(workspaceDir, app.getAppPath())) {
       return { kind: "unavailable", text: "创造模式需要在项目中打开独立的 Arrodes Git 源码副本。" };
     }
@@ -376,17 +407,20 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => 
     try {
       const run = mode === "team" ? runTeamTurn : runAgentTurn;
       result = await run({
-        text: input,
+        text: taskText,
         creator: mode === "creator",
-        history: conversation.history.filter(({ role }) => role !== "error").slice(-12),
+        history: origin.history.filter(({ role }) => role !== "error").slice(-12),
         workspaceDir,
         config,
         customRoles: mode === "team" ? teamRoles.list() : [],
-        canvas: mode === "team" ? teamCanvases.get(conversation.workspaceId) : null,
+        canvas: mode === "team" ? teamCanvases.get(origin.workspaceId) : null,
         skills: mode === "team" ? teamSkills.list() : [],
+        clarifyFollowUp: mode === "team" ? clarifyFollowUp : null,
         mcpForRole: mode === "team" ? (roleId) => mcpTools.forRole(roleId) : undefined,
-        instructions: mode === "team" ? "" : skillInstructions(BASIC_AGENT_SKILLS,
-          selectSkills(BASIC_AGENT_SKILLS, mode === "creator" ? `项目代码\n${input}` : input)),
+        instructions: mode === "team" ? "" : (clarifyFollowUp
+          ? `${skillInstructions(BASIC_AGENT_SKILLS, selectSkills(BASIC_AGENT_SKILLS, mode === "creator" ? `项目代码\n${taskText}` : taskText))}\n存在未决确认：「${clarifyFollowUp.question}」可选：${clarifyFollowUp.options.map(({ label }) => label).join(" / ")}。用户最新消息是对它的自由回复，请结合选项判断意图后继续。`
+          : skillInstructions(BASIC_AGENT_SKILLS,
+          selectSkills(BASIC_AGENT_SKILLS, mode === "creator" ? `项目代码\n${taskText}` : taskText))),
         openItem: (path) => shell.openPath(path),
         launchDesktop: (target) => launchWindowsDesktop(target, (url) => shell.openExternal(url)),
         approveAction,
@@ -398,22 +432,26 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode }) => 
             });
           }
         },
-        onCanvasEvent: (event) => win?.webContents?.send("canvas:event", { conversationId: conversation.id, event }),
-        onProgress: (line) => win?.webContents?.send("chat:progress", { line }),
+        onCanvasEvent: (event) => win?.webContents?.send("canvas:event", { conversationId: origin.id, event }),
+        onProgress: (line) => win?.webContents?.send("chat:progress", { conversationId: origin.id, line }),
       });
     } catch {
       result = { kind: "error", text: "无法连接模型，请检查网络和模型设置。" };
     }
     if (result.kind === "unavailable") return result;
+    if (result.kind === "clarify") result.clarification = pendingClarification(result.clarification, mode === "team" ? "team" : "chat", taskText);
+    if (result.kind !== "clarify" && (!confirmed || result.kind === "error")) result.clarification = pending;
     if (executions.length) result = { ...result, executions };
-    saveConversation({
-      ...conversation,
+    const completed = {
+      ...origin,
       history: [
-        ...conversation.history,
+        ...origin.history,
         { role: "user", content: input },
-        { role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration, executions: result.executions },
+        { role: result.kind === "error" ? "error" : "assistant", content: result.text, collaboration: result.collaboration, executions: result.executions, clarification: result.clarification },
       ],
-    });
+    };
+    writeConversation(completed);
+    if (conversation.id === origin.id) conversation = completed;
     return result;
   } catch {
     return { kind: "error", text: "无法访问工作区或保存会话，请检查本地目录后重试。" };

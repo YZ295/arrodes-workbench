@@ -151,6 +151,12 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
   await mkdir(existingFolder);
   const requests = [];
   const token = randomUUID();
+  const backgroundTask = '切换会话时继续执行';
+  const clarifyTask = '熟悉这两个订单文件';
+  const clarifyOption = '交叉分析并落盘';
+  const clarifyFile = '确认后的订单分析.md';
+  let finishBackground;
+  const backgroundGate = new Promise((resolve) => { finishBackground = resolve; });
   const server = createServer(async (request, response) => {
     try {
       if (request.url === '/v1/models') {
@@ -179,7 +185,20 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
       const results = messages.slice(messages.findLastIndex(({ role }) => role === 'user') + 1)
         .filter(({ role }) => role === 'tool');
       let message = teamReply(messages, tools);
-      if (message) {
+      if (latest === backgroundTask) {
+        await backgroundGate;
+        message = assistant('后台任务已完成。');
+      } else if (latest === clarifyTask) {
+        assert.ok(tools.some((tool) => tool.function.name === 'ask_user'));
+        message = toolCall('ask_user', { question: '你希望怎么交付？', options: [
+          { label: clarifyOption, task: '交叉核对订单和退款', inputs: ['orders.csv', 'refunds.csv'], outputs: [clarifyFile] },
+        ] });
+      } else if (latest.includes(`已选方案：${clarifyOption}`)) {
+        assert.match(latest, /源文件：\["orders\.csv","refunds\.csv"\]/);
+        assert.ok(latest.includes(clarifyFile));
+        message = results.length ? assistant('已写入确认后的订单分析。')
+          : toolCall('write_file', { path: clarifyFile, content: '已交叉核对订单和退款。' });
+      } else if (message) {
         // The local provider implements the team protocol deterministically.
       } else if (latest === powershellTask) {
         assert.ok(tools.some((tool) => tool.function.name === 'run_powershell'));
@@ -353,10 +372,10 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     assert.equal(await formatted.locator('li strong').innerText(), '范围');
     assert.equal(await formatted.locator('li code').innerText(), 'math.js');
     assert.equal(await formatted.locator('img').count(), 0);
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 3);
     assert.ok(requests.every((messages) => !messages.some(({ role }) => role === 'tool')));
     assert.deepEqual(await readdir(workspace), []);
-    assert.ok(requests[1].some(({ role, content }) => role === 'assistant' && content === '你好！'));
+    assert.ok(requests[0].some(({ role, content }) => role === 'assistant' && content === '你好！'));
     console.log('3–6 问候、工作区问答、澄清、停止均未运行工具');
 
     await send(page, task, '已创建 math.js，语法检查通过。');
@@ -514,7 +533,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await restored.locator('.bubble.assistant').filter({ hasText: '引用核对员已完成，验收通过。' }).waitFor();
     await restored.locator('#input').fill(forbiddenRoleGoal);
     await restored.getByRole('button', { name: '开始协作' }).click();
-    await restored.locator('.bubble.assistant').filter({ hasText: '本次协作未通过验收。上游交付未完成。' }).waitFor();
+    await restored.locator('.bubble.assistant').filter({ hasText: /本次协作未通过验收。.*失败.*write_file/s }).waitFor();
     assert.ok(!(await readdir(existingFolder)).includes('越权.txt'));
     console.log('自定义角色创建、重启恢复、按职责派发和只读权限通过');
 
@@ -717,6 +736,10 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     if (process.env.ARRODES_APPROVAL_SCREENSHOT) await approval.screenshot({ path: process.env.ARRODES_APPROVAL_SCREENSHOT });
     await approval.getByRole('button', { name: '运行脚本' }).click();
     await shellRun;
+    const executionHistory = archivePage.locator('details').filter({ has: archivePage.getByText('执行记录（1 条）', { exact: true }) }).last();
+    await executionHistory.getByText('执行记录（1 条）', { exact: true }).waitFor();
+    assert.equal(await executionHistory.evaluate((node) => node.open), false);
+    await executionHistory.getByText('执行记录（1 条）', { exact: true }).click();
     const card = archivePage.getByRole('region', { name: 'PowerShell 执行结果' }).last();
     assert.match(await card.textContent(), /执行成功 · 退出码 0/);
     assert.match(await card.locator('pre').textContent(), /PowerShell [0-9]+\.[0-9]+/);
@@ -734,18 +757,56 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await chooseApproval('帮我批准', '完全访问权限');
     await send(archivePage, powershellTask, '已读取 PowerShell 版本。');
     assert.equal(await approval.count(), 0);
-    await archivePage.getByRole('region', { name: 'PowerShell 执行结果' }).nth(2).waitFor();
+    await archivePage.getByText('执行记录（1 条）', { exact: true }).nth(2).waitFor();
     await chooseApproval('完全访问权限', '请求批准');
     const creatorToggle = archivePage.getByRole('button', { name: '创造模式', exact: true });
     await creatorToggle.click();
     await archivePage.locator('#input').fill('修改 Arrodes');
     await archivePage.getByRole('button', { name: '发送', exact: true }).click();
     await archivePage.getByRole('alert').filter({ hasText: '独立的 Arrodes Git 源码副本' }).waitFor();
+    await archivePage.getByRole('button', { name: '创造模式已开启', exact: true }).click();
+    await archivePage.getByRole('button', { name: '新建会话', exact: true }).click();
+    await archivePage.getByRole('heading', { name: '今天想做什么？' }).waitFor();
+    const originId = await archivePage.evaluate(async () => (await window.arrodes.getConversation()).id);
+    await archivePage.locator('#input').fill(backgroundTask);
+    await archivePage.getByRole('button', { name: '发送', exact: true }).click();
+    await archivePage.getByRole('button', { name: '执行中…', exact: true }).waitFor();
+    await archivePage.getByRole('button', { name: '新建会话', exact: true }).click();
+    await archivePage.getByRole('button', { name: '另一会话执行中', exact: true }).waitFor();
+    const currentId = await archivePage.evaluate(async () => (await window.arrodes.getConversation()).id);
+    assert.notEqual(currentId, originId);
+    await archivePage.locator('#input').fill('保留另一会话输入');
+    finishBackground();
+    await archivePage.getByRole('button', { name: '发送', exact: true }).waitFor();
+    assert.equal(await archivePage.locator('#input').inputValue(), '保留另一会话输入');
+    assert.equal(await archivePage.getByText('后台任务已完成。', { exact: true }).count(), 0);
+    await archivePage.locator(`[id="recent-${originId}"]`).click();
+    await archivePage.getByText('后台任务已完成。', { exact: true }).waitFor();
+    assert.equal(await archivePage.locator('.bubble.user').filter({ hasText: backgroundTask }).count(), 1);
+    await send(archivePage, clarifyTask, '你希望怎么交付？');
+    const pending = archivePage.getByRole('region', { name: '待确认任务' });
+    await pending.getByRole('button', { name: clarifyOption }).waitFor();
+    await app.close();
+    app = undefined;
+    const { page: resumed } = await launch();
+    await resumed.getByRole('button', { name: '多 Agent', exact: true }).click();
+    const requestsBeforeGreeting = requests.length;
+    await resumed.locator('#input').fill('你好');
+    await resumed.getByRole('button', { name: '开始协作' }).click();
+    await resumed.getByText('你好！', { exact: true }).waitFor();
+    assert.equal(requests.length, requestsBeforeGreeting);
+    assert.equal(await resumed.locator('.team-trace').count(), 0);
+    await resumed.getByRole('button', { name: '返回对话', exact: true }).click();
+    await resumed.getByRole('region', { name: '待确认任务' }).getByRole('button', { name: clarifyOption }).click();
+    await resumed.getByText('已写入确认后的订单分析。', { exact: true }).waitFor();
+    assert.equal(await resumed.getByRole('region', { name: '待确认任务' }).count(), 0);
+    assert.equal(await readFile(join(path, clarifyFile), 'utf8'), '已交叉核对订单和退款。');
     console.log('新确认界面、PowerShell 结果卡和创造模式工作区校验通过');
     console.log('内置 Skill 已注入，Electron 主进程生成真实 XLSX');
     console.log('会话归档、历史保留、重启及恢复通过');
     console.log('画布连接、角色 Skill 注入与隔离、真实交接、文件和重启恢复通过');
   } finally {
+    finishBackground();
     if (app) await app.close();
     await new Promise((done) => server.close(done));
     await rm(profile, { recursive: true, force: true, maxRetries: 5 });

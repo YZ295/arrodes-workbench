@@ -251,7 +251,12 @@ export async function executeBasicTool(name, args, root, { safePath, approveActi
       const bytes = Buffer.from(await book.xlsx.writeBuffer());
       if (bytes.length > maxFileBytes) return fail("表格超过 10 MB。");
       await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, bytes, { flag: "wx" });
+      try {
+        await writeFile(target, bytes, { flag: "wx" });
+      } catch (error) {
+        if (error.code === "EEXIST") return fail("目标 XLSX 已存在，请换一个文件名后重试。");
+        throw error;
+      }
       return { ...pass(`已导出 ${args.path}，共 ${rows.length} 行。`), artifact: args.path };
     }
     case "verify_file": {

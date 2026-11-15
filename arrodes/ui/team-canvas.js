@@ -444,9 +444,16 @@ function createTeamCanvas(updateSendButton) {
       chip.disabled = lock;
       return chip;
     }));
-    transfers.replaceChildren(...handoffs.map((event) => {
-      const label = `${name(event.from)} → ${name(event.to)}`;
-      return button(label, () => showTransfer(event), label, { title: `交接 · ${event.artifacts.length} 项` });
+    // 交接标签：跳过自指（同一角色的协助续跑），同向去重保留最后一次并显示次数
+    const grouped = new Map();
+    for (const event of handoffs) {
+      if (event.from === event.to) continue;
+      grouped.set(`${event.from}→${event.to}`, event);
+    }
+    transfers.replaceChildren(...[...grouped.values()].map((event) => {
+      const count = handoffs.filter(({ from, to }) => from === event.from && to === event.to).length;
+      const label = `${name(event.from)} → ${name(event.to)}${count > 1 ? ` ×${count}` : ""}`;
+      return button(label, () => showTransfer(event), label, { title: `交接 · ${count} 次` });
     }));
     if (focus) [...root.querySelectorAll("[data-canvas-focus]")]
       .find((node) => node.getAttribute("data-canvas-focus") === focus)?.focus({ preventScroll: true });
@@ -512,7 +519,7 @@ function createTeamCanvas(updateSendButton) {
     if (event.type === "assist.requested" && event.roleId) helping.add(event.roleId);
     if (event.type === "task.resumed") helping.delete(event.roleId);
     const delivery = event.type === "task.handoff" || event.type === "assignment";
-    if (delivery && event.from && event.to) handoffs.push(event);
+    if (delivery && event.from && event.to && event.from !== event.to) handoffs.push(event);
     if (event.type === "done") {
       helping.clear();
       for (const task of event.tasks) status.set(task.taskId, { ...status.get(task.taskId), ...task });
@@ -538,7 +545,7 @@ function createTeamCanvas(updateSendButton) {
     get pending() { return saving || loading; },
     refreshRoles(catalog) { roles = catalog; draw(); },
     receive,
-    sync(workspace, conversation, history, running) {
+    sync(workspace, conversation, history, running, liveEvents) {
       const busyChanged = busy !== running;
       busy = running;
       const workspaceChanged = workspace !== workspaceId;
@@ -550,6 +557,7 @@ function createTeamCanvas(updateSendButton) {
         resetRun();
         const latest = history.findLast(({ collaboration }) => Array.isArray(collaboration?.canvasEvents));
         for (const event of latest?.collaboration.canvasEvents ?? []) receive(event, false);
+        for (const event of liveEvents ?? []) receive(event, false);
       }
       if (workspaceChanged) {
         workspaceId = workspace;
