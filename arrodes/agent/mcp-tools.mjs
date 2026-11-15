@@ -20,7 +20,7 @@ function readConnection(input) {
 }
 
 async function withServer(connection, operation) {
-  const client = new Client({ name: "arrodes", version: "1.1.0" });
+  const client = new Client({ name: "arrodes", version: "1.1.1" });
   const transport = new StdioClientTransport({
     command: connection.command, args: connection.args, stderr: "pipe",
   });
