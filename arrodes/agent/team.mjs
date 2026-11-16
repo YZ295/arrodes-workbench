@@ -543,12 +543,13 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
     if (replan?.action !== "run") {
       return { kind: "reply", text: `上一轮未通过验收：${reason}协调者未能给出修正分工，请重试。`, collaboration: { events, checks, passed: false, canvasEvents } };
     }
+    // 临时角色注册纳入现有错误处理：注册或校验失败都返回分工错误，并保留首轮验收原因
     try {
-      tasks = applyCanvasDependencies(readTasks(replan, workerProfiles), graph?.edges ?? [], workerProfiles);
+      syncSubAgents(replan, workerProfiles, workerMcp, { onProgress, sendCanvas });
+      tasks = applyCanvasDependencies(readTasks(replan, workerProfiles), graph?.edges ?? []);
     } catch (error) {
       return { kind: "reply", text: `重新规划失败：${error.message}（上一轮未通过验收：${reason}）`, collaboration: { events, checks, passed: false, canvasEvents } };
     }
-    syncSubAgents(replan, workerProfiles, workerMcp, { onProgress, sendCanvas });
     const issues = checkTaskInputs(tasks, workerProfiles, workspaceDir);
     if (issues) return { kind: "reply", text: `${issues}（上一轮未通过验收：${reason}）`, collaboration: { events, checks, passed: false, canvasEvents } };
   }

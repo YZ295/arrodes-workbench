@@ -617,3 +617,90 @@ test("确认问题的自由回复会带上未决确认上下文重新规划并�
   assert.equal(await readFile(join(fx.workspaceDir, "报告.md"), "utf8"), "交叉分析完成");
 });
 
+
+test("自我循环重规划创建临时角色并完成交付", async (t) => {
+  const fx = await fixture(t, {}, []);
+  let plans = 0;
+  fx.fetchMock.mock.mockImplementation(async (_url, options) => {
+    const { messages } = JSON.parse(options.body);
+    const stage = messages[0].content.split("\n")[0];
+    let message = { content: "已完成。" };
+    if (stage === "协作阶段：规划") {
+      plans++;
+      if (plans === 1) {
+        message = { content: JSON.stringify({ action: "run", tasks: [
+          { ...task, outputs: ["报告.md"], requiredInputs: [] } ] }) };
+      } else {
+        const input = JSON.parse(messages[1].content);
+        assert.match(input.correction ?? "", /未通过|失败/);
+        message = { content: JSON.stringify({ action: "run",
+          subAgents: [{ name: "数据撰写员", description: "专职重写退款报告。", access: "write" }],
+          tasks: [{ ...task, role: "sub-1", outputs: ["报告.md"], requiredInputs: [] } ] }) };
+      }
+    }
+    if (stage === "协作阶段：执行") {
+      const results = messages.filter(({ role }) => role === "tool");
+      if (!results.length) message = { tool_calls: [{ id: `w-${plans}`, type: "function", function: {
+        name: "write_file", arguments: JSON.stringify({ path: "报告.md",
+          content: plans === 1 ? "草稿，缺合计" : "最终报告：合计 425.76（重写自临时角色）" }) } }] };
+    }
+    if (stage === "协作阶段：验收") {
+      message = { content: JSON.stringify(plans === 1
+        ? { passed: false, reason: "报告缺少退款合计，建议由专职撰写角色重写。" }
+        : { passed: true, reason: "报告包含合计。" }) };
+    }
+    return { ok: true, json: async () => ({ choices: [{ message }] }) };
+  });
+  const result = await fx.run({});
+  assert.equal(result.kind, "reply");
+  assert.equal(result.collaboration?.passed, true);
+  const created = result.collaboration.canvasEvents.filter(({ type }) => type === "subagent.created");
+  assert.equal(created.length, 1);
+  assert.equal(created[0].roleName, "数据撰写员");
+  const iterations = result.collaboration.canvasEvents.filter(({ type }) => type === "selfloop.iteration");
+  assert.equal(iterations.length, 1);
+  assert.equal(plans, 2);
+  assert.equal(await readFile(join(fx.workspaceDir, "报告.md"), "utf8"), "最终报告：合计 425.76（重写自临时角色）");
+});
+
+test("重规划的临时角色与现有角色重名时返回分工错误并保留首轮验收原因", async (t) => {
+  const fx = await fixture(t, {}, []);
+  let plans = 0;
+  const firstReason = "报告缺少退款合计，建议由专职撰写角色重写。";
+  fx.fetchMock.mock.mockImplementation(async (_url, options) => {
+    const { messages } = JSON.parse(options.body);
+    const stage = messages[0].content.split("\n")[0];
+    let message = { content: "已完成。" };
+    if (stage === "协作阶段：规划") {
+      plans++;
+      if (plans === 1) {
+        message = { content: JSON.stringify({ action: "run", tasks: [
+          { ...task, outputs: ["报告.md"], requiredInputs: [] } ] }) };
+      } else {
+        const input = JSON.parse(messages[1].content);
+        assert.match(input.correction ?? "", /未通过|失败/);
+        // 重名：与内置角色「执行 Agent」冲突
+        message = { content: JSON.stringify({ action: "run",
+          subAgents: [{ name: "执行 Agent", description: "与现有角色重名。", access: "write" }],
+          tasks: [{ ...task, role: "sub-1", outputs: ["报告.md"], requiredInputs: [] } ] }) };
+      }
+    }
+    if (stage === "协作阶段：执行") {
+      const results = messages.filter(({ role }) => role === "tool");
+      if (!results.length) message = { tool_calls: [{ id: `w-${plans}`, type: "function", function: {
+        name: "write_file", arguments: JSON.stringify({ path: "报告.md", content: "草稿" }) } }] };
+    }
+    if (stage === "协作阶段：验收") {
+      message = { content: JSON.stringify({ passed: plans !== 1,
+        reason: plans === 1 ? firstReason : "不该走到这里。" }) };
+    }
+    return { ok: true, json: async () => ({ choices: [{ message }] }) };
+  });
+  const result = await fx.run({});
+  assert.equal(result.kind, "reply");
+  assert.match(result.text, /重新规划失败/);
+  assert.match(result.text, /重名|无效/);
+  assert.match(result.text, /上一轮未通过验收/);
+  assert.match(result.text, /缺少退款合计/); // 首轮验收原因被保留
+  assert.ok(fx.events.some(({ type }) => type === "plan")); // 首轮确实执行过分工
+});
