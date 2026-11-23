@@ -582,8 +582,10 @@ function sidebar() {
     const children = state.sessions.filter((session) => !session.archived && session.workspaceId === id);
     const newChat = addButton(`${name}：新建会话`, "在此项目新建会话", () => startConversation(id));
     newChat.disabled ||= !available;
+    const notes = makeButton({ class: "icon-button", "aria-label": `${name}：项目记忆`, title: "项目记忆",
+      onclick: () => openProjectNotes(workspace) }, icon("archive"));
     return el("div", {}, el("div", { class: "project-row" }, row,
-      newChat,
+      notes, newChat,
     ), ...(expanded && children.length ? [el("div", { class: "project-sessions" },
       ...children.map((session) => sessionButton(session, "project")),
     )] : []));
@@ -831,6 +833,46 @@ async function send(confirmation, answer) {
       executions: result.executions, clarification: result.clarification }];
   render();
   document.getElementById("input")?.focus();
+}
+
+async function openProjectNotes({ id, name }) {
+  let note;
+  try { note = await window.arrodes.getProjectNotes(id); }
+  catch { state.notice = "无法读取项目记忆。"; render(); return; }
+  const dialog = el("dialog", { class: "dialog role-dialog", "aria-labelledby": "project-memory-title" });
+  const form = el("form", { class: "role-form" });
+  const feedback = el("p", { class: "hint", role: "status" });
+  const names = { decisions: "决定", blockers: "阻塞", next: "下一步" };
+  const inputs = Object.fromEntries(Object.entries(names).map(([key, label]) =>
+    [key, el("textarea", { "aria-label": label, rows: 2, maxlength: 1200 }, note[key] ?? "")]));
+  const submit = el("button", { type: "submit", class: "send" }, "保存");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    try {
+      const result = await window.arrodes.saveProjectNotes(id,
+        Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value])));
+      if (result.ok) dialog.close();
+      else feedback.textContent = result.error;
+    } catch {
+      feedback.textContent = "无法保存项目记忆。";
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  const last = note.lastRun;
+  form.append(el("h2", { id: "project-memory-title" }, "项目记忆"), el("p", { class: "hint" }, name),
+    el("p", { class: "hint" }, "记录保存在本机，会作为此工作区的上下文提供给模型。"),
+    ...Object.entries(names).map(([key, label]) => field(label, inputs[key])),
+    ...(last ? [el("p", { class: "hint" }, [
+      last.status === "interrupted" ? "最近中断" : "最近文件写入记录",
+      new Date(last.at).toLocaleString(), last.step, ...last.files,
+    ].join(" · "))] : []), feedback,
+    el("div", { class: "actions" }, el("button", { type: "button", class: "ghost", onclick: () => dialog.close() }, "关闭"), submit));
+  dialog.append(form);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
 }
 
 function openWorkspaceCreator() {

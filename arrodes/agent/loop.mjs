@@ -244,7 +244,7 @@ function directDesktopRequest(text) {
 
 const creatorTools = new Set(["list_dir", "read_file", "search_workspace", "compare_files", "write_file", "check_syntax"]);
 
-export async function runAgentTurn({ text, history, workspaceDir, config, onProgress, collaboration, approveAction, openItem, launchDesktop, creator = false, onToolResult, instructions = "" }) {
+export async function runAgentTurn({ text, history, workspaceDir, config, onProgress, collaboration, approveAction, openItem, launchDesktop, creator = false, onToolResult, instructions = "", projectContext = "" }) {
   const tools = TOOLS.filter(({ function: { name } }) =>
     (!collaboration || collaboration.tools.includes(name)) && (!creator || creatorTools.has(name)) && (name !== "open_desktop" || typeof launchDesktop === "function")
     && (name !== "run_powershell" || process.platform === "win32" && typeof approveAction === "function"));
@@ -269,7 +269,7 @@ export async function runAgentTurn({ text, history, workspaceDir, config, onProg
   const role = collaboration ? `协作阶段：${collaboration.stage}\n${collaboration.instructions}\n` : "";
   const workflow = projectWorkflow(text);
   const messages = [
-    { role: "system", content: `${role}${SYSTEM}${instructions}\n${workflow}${creator ? "\n创造模式：当前工作区是 Arrodes 源码副本。先读取并定位相关代码，逐文件提出小改动，由应用按当前批准权限处理差异后写入。用 check_syntax 验证 JavaScript，并报告需手动运行的测试和构建步骤。" : ""}\n${describeTurnTools(activeTools)}\n当前工作区目录：${workspaceDir}` },
+    { role: "system", content: `${role}${SYSTEM}${instructions}\n${workflow}${creator ? "\n创造模式：当前工作区是 Arrodes 源码副本。先读取并定位相关代码，逐文件提出小改动，由应用按当前批准权限处理差异后写入。用 check_syntax 验证 JavaScript，并报告需手动运行的测试和构建步骤。" : ""}\n${describeTurnTools(activeTools)}${projectContext}\n当前工作区目录：${workspaceDir}` },
     ...history.map((item) => ({ role: item.role, content: item.content })),
     { role: "user", content: text },
   ];
@@ -336,7 +336,7 @@ export async function runAgentTurn({ text, history, workspaceDir, config, onProg
         } catch (error) {
           result = { ok: false, output: error?.message ?? String(error) };
         }
-        onToolResult?.(name, result);
+        onToolResult?.(name, result, args);
         collaboration?.onToolResult?.(name, args, result);
         messages.push({
           role: "tool",

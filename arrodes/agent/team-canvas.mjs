@@ -87,17 +87,33 @@ export function createTeamCanvasStore(dataDir) {
       throw error;
     }
   }
+  function write(saved) {
+    mkdirSync(dataDir, { recursive: true });
+    const pending = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(pending, JSON.stringify(saved, null, 2), "utf8");
+    renameSync(pending, file);
+  }
   return {
     get: (workspaceId) => list()[workspaceId] ?? null,
+    list,
     save(workspaceId, input, roles, skills) {
       const graph = validateCanvas(input, roles, skills);
       const saved = list();
       saved[workspaceId] = graph;
-      mkdirSync(dataDir, { recursive: true });
-      const pending = `${file}.${randomUUID()}.tmp`;
-      writeFileSync(pending, JSON.stringify(saved, null, 2), "utf8");
-      renameSync(pending, file);
+      write(saved);
       return graph;
+    },
+    unlinkSkill(id) {
+      const saved = list();
+      let changed = false;
+      for (const graph of Object.values(saved)) {
+        for (const node of graph.nodes ?? []) {
+          if (!node.skillIds?.includes(id)) continue;
+          node.skillIds = node.skillIds.filter((item) => item !== id);
+          changed = true;
+        }
+      }
+      if (changed) write(saved);
     },
   };
 }

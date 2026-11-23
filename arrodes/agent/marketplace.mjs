@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fetchGithubSkill } from "./github-skills.mjs";
@@ -10,11 +10,19 @@ const fields = { id: 64, kind: 12, category: 40, name: 64, description: 280, aut
 const limit = 96 * 1024;
 export const defaultWindowColors = { color: "#ffffff", symbolColor: "#172033" };
 const nightWindowColors = { color: "#111b2e", symbolColor: "#edf3fc" };
+const versionPattern = /^(?:0|[1-9][0-9]{0,7})\.(?:0|[1-9][0-9]{0,7})\.(?:0|[1-9][0-9]{0,7})$/;
+
+function newer(candidate, installed) {
+  if (!versionPattern.test(candidate) || !versionPattern.test(installed)) return false;
+  const numbers = installed.split(".").map(Number);
+  const difference = candidate.split(".").map((part, index) => Number(part) - numbers[index]).find(Boolean);
+  return difference > 0;
+}
 
 function readEntry(value) {
   if (!value || Object.entries(fields).some(([field, max]) =>
     typeof value[field] !== "string" || !value[field].trim() || value[field].length > max)) return null;
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(value.id) || value.kind !== "skill") return null;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(value.id) || value.kind !== "skill" || !versionPattern.test(value.version)) return null;
   let url;
   try { url = new URL(value.source); } catch { return null; }
   if (url.origin !== "https://github.com" || url.username || url.password ||
@@ -22,9 +30,11 @@ function readEntry(value) {
   return { ...Object.fromEntries(Object.keys(fields).map((field) => [field, value[field]])), source: url.href };
 }
 
-export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
+export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle, checkSkillUnused }) {
   const file = join(dataDir, "marketplace.json");
   const catalog = new Map(bundled.map((entry) => [entry.id, entry]));
+  const bundledById = new Map(catalog);
+  let changing = false;
   let source = "随应用提供";
 
   function load() {
@@ -45,7 +55,9 @@ export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
   function snapshot() {
     const { installed, theme } = load();
     const windowColors = theme === "night" ? nightWindowColors : defaultWindowColors;
-    return { catalog: [...catalog.values()], installed, theme, source, windowColors };
+    const updates = [...catalog.values()].filter((entry) => Object.hasOwn(installed, entry.id) &&
+      newer(entry.version, installed[entry.id].version)).map(({ id }) => id);
+    return { catalog: [...catalog.values()], installed, theme, source, windowColors, updates };
   }
 
   async function refresh() {
@@ -64,7 +76,8 @@ export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
       catalog.clear();
       for (const entry of bundled) catalog.set(entry.id, entry);
       for (const entry of entries.map(readEntry).filter(Boolean)) {
-        if (!catalog.has(entry.id)) catalog.set(entry.id, entry);
+        const existing = catalog.get(entry.id);
+        if (!existing || (existing.kind === entry.kind && newer(entry.version, existing.version))) catalog.set(entry.id, entry);
       }
       source = "GitHub 社区目录";
     } catch {
@@ -73,24 +86,53 @@ export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
     return snapshot();
   }
 
-  async function install(id) {
+  async function install(id, updating = false) {
     checkIdle();
+    if (changing) throw new Error("请等待当前插件操作完成。");
     const entry = catalog.get(id);
     if (!entry) throw new Error("此插件已离开目录，请刷新后重试。");
-    if (Object.hasOwn(load().installed, id)) return snapshot();
-    let skillId;
-    if (entry.kind === "skill") {
-      if (bundled.some((item) => item.id === id)) {
-        const path = new URL(`./skills/${id}/SKILL.md`, import.meta.url);
-        skillId = teamSkills.importMarkdown(readFileSync(path), path.pathname);
-      } else {
-        const item = await fetchGithubSkill(entry.source, fetcher);
-        checkIdle();
-        skillId = teamSkills.importMarkdown(item.bytes, item.path);
+    const installed = load().installed;
+    const previous = Object.hasOwn(installed, id) ? installed[id] : null;
+    if (previous && (!updating || !newer(entry.version, previous.version))) return snapshot();
+    if (updating && !previous) throw new Error("请先安装插件。");
+    changing = true;
+    try {
+      let skillId;
+      if (entry.kind === "skill") {
+        const key = previous?.skillId ?? `local-${createHash("sha256").update(`marketplace:${id}`).digest("hex")}`;
+        if (bundledById.get(id) === entry) {
+          const path = new URL(`./skills/${id}/SKILL.md`, import.meta.url);
+          skillId = teamSkills.importMarkdown(readFileSync(path), path.pathname, "", key);
+        } else {
+          const item = await fetchGithubSkill(entry.source, fetcher);
+          checkIdle();
+          skillId = teamSkills.importMarkdown(item.bytes, item.path, "", key);
+        }
+      }
+      const state = load();
+      state.installed[id] = { ...entry, ...(skillId ? { skillId } : {}) };
+      save(state);
+      return snapshot();
+    } finally {
+      changing = false;
+    }
+  }
+
+  function remove(id, unlink = false) {
+    checkIdle();
+    if (changing) throw new Error("请等待当前插件操作完成。");
+    const state = load();
+    if (!Object.hasOwn(state.installed, id)) return snapshot();
+    const item = state.installed[id];
+    if (item.skillId) {
+      const shared = Object.entries(state.installed).some(([other, entry]) => other !== id && entry.skillId === item.skillId);
+      if (!shared) {
+        checkSkillUnused(item.skillId, unlink);
+        teamSkills.remove(item.skillId);
       }
     }
-    const state = load();
-    state.installed[id] = { ...entry, ...(skillId ? { skillId } : {}) };
+    delete state.installed[id];
+    if (state.theme === id) state.theme = null;
     save(state);
     return snapshot();
   }
@@ -105,5 +147,5 @@ export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
     return snapshot();
   }
 
-  return { refresh, snapshot, install, theme };
+  return { refresh, snapshot, install, remove, theme };
 }

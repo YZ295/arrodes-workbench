@@ -623,6 +623,7 @@ function createTeamCanvas(updateSendButton) {
     refreshRoles(catalog) { roles = catalog; draw(); },
     refreshExecutors(catalog) { executors = catalog; draw(); },
     refreshSkills(catalog) { skills = catalog; draw(); },
+    refreshConfiguration(value) { saved = value.graph; roles = value.roles; skills = value.skills; draw(); },
     receive,
     sync(workspace, conversation, history, running, liveEvents) {
       const busyChanged = busy !== running;

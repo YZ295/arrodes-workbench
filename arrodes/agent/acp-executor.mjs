@@ -4,6 +4,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { relative } from "node:path";
 import { safePath } from "./loop.mjs";
 import { nativeToolPermission } from "./native-process.mjs";
+import appPackage from "../package.json" with { type: "json" };
+
+const requestTimeout = 240_000;
 
 export function openNativeRpc(executable, args, { cwd, env, label, onRequest, onNotification }) {
   const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -41,7 +44,7 @@ export function openNativeRpc(executable, args, { cwd, env, label, onRequest, on
     request(method,params={}) { return new Promise((resolve,reject)=>{
       if(stopped) return reject(new Error(`${label} 原生连接已关闭。`));
       const id=++nextId;
-      const timer=setTimeout(()=>{waiting.delete(id);reject(new Error(`${label} 原生协议请求超时。`));},240_000);
+      const timer=setTimeout(()=>{waiting.delete(id);reject(new Error(`${label} 原生协议请求超时。`));},requestTimeout);
       waiting.set(id,{resolve,reject,timer});send({jsonrpc:"2.0",id,method,params});
     }); },
     notify:(method,params)=>send({jsonrpc:"2.0",method,params}), close:stop,
@@ -49,15 +52,19 @@ export function openNativeRpc(executable, args, { cwd, env, label, onRequest, on
 }
 
 export async function runAcpAgent(runtime, { cwd, input, writing, session, model, approveAction, onProgress, label }) {
-  let collecting=false, text="", sessionId;
+  let collecting=false, text="", sessionId, terminalTimer;
+  const terminal = Promise.withResolvers();
   const rpc=openNativeRpc(runtime.executable,runtime.args,{cwd,env:runtime.env,label,
     onNotification(method,params) {
       if(method!=="session/update"||!collecting||params.sessionId!==sessionId)return;
       const update=params.update;
       if(update?.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")text+=update.content.text;
+      if(update?.sessionUpdate==="agent_message"&&update.content?.type==="text")text=update.content.text;
       if(update?.sessionUpdate==="tool_call") {text="";onProgress?.(`${label} · ${update.title??update.kind??"原生工具"}`);}
+      if(runtime.harness && update?.sessionUpdate==="state_update" && update.state==="idle" && update.stopReason) terminal.resolve(update);
     },
     async onRequest(method,params) {
+      if(method==="elicitation/create" && runtime.harness) return {action:"cancel"};
       if(method==="session/request_permission") {
         const call=params.toolCall??{};
         let allowed=false;
@@ -80,9 +87,9 @@ export async function runAcpAgent(runtime, { cwd, input, writing, session, model
     },
   });
   try {
-    const clientInfo={name:"arrodes",version:"1.1.1"};
+    const clientInfo={name:"arrodes",version:appPackage.version};
     const init=await rpc.request("initialize",{protocolVersion:runtime.protocolVersion??1,clientInfo,
-      ...(runtime.harness?{info:clientInfo,capabilities:{}}:{clientCapabilities:{fs:{readTextFile:true,writeTextFile:writing},terminal:false}})});
+      ...(runtime.harness?{capabilities:{agent:{elicitation:{form:{},url:{}}}}}:{clientCapabilities:{fs:{readTextFile:true,writeTextFile:writing},terminal:false}})});
     if(runtime.harness)rpc.notify("initialized",{});
     const capabilities=init.agentCapabilities??init.capabilities??{};
     let result;
@@ -97,15 +104,26 @@ export async function runAcpAgent(runtime, { cwd, input, writing, session, model
       await rpc.request(option?"session/set_config_option":"session/set_model",option
         ?{sessionId,configId:option.id,value:model}:{sessionId,modelId:model});
     }
-    if(result.modes?.availableModes?.some(m=>m.id===(writing?"workspace-write":"read-only")))
-      await rpc.request("session/set_mode",{sessionId,modeId:writing?"workspace-write":"read-only"});
+    const modeId = writing ? "workspace-write" : "read-only";
+    const availableMode = result.modes?.availableModes?.some((mode) => mode.id === modeId);
+    if (availableMode) await rpc.request("session/set_mode", { sessionId, modeId });
+    else if (runtime.harness && !runtime.connectionProbe) throw new Error(`${label} 未提供此角色所需的原生权限模式。`);
     collecting=true;
-    const answer=await rpc.request("session/prompt",{sessionId,prompt:[{type:"text",text:input}]});
+    let answer=await rpc.request("session/prompt",{sessionId,prompt:[{type:"text",text:input}]});
+    if (runtime.harness && answer.messageId && !answer.stopReason) {
+      answer = await Promise.race([terminal.promise, new Promise((_, reject) => {
+        terminalTimer = setTimeout(() => reject(new Error(`${label} 已创建会话，但等待模型终态超时。`)), requestTimeout);
+      })]);
+    }
     collecting=false;
-    if(answer.stopReason!=="end_turn"||!text.trim())throw new Error(`${label} 未完成原生任务。`);
+    if(answer.stopReason!=="end_turn"||!text.trim())throw new Error(runtime.harness
+      ? `${label} 已创建原生会话，但模型未返回可用回复，请检查 WorkBuddy 提供的模型和登录状态。`
+      : `${label} 未完成原生任务。`);
+    if (runtime.harness && !availableMode) throw new Error(`${label} 模型已回复，但当前入口缺少安全的角色权限模式。`);
     await session.save(sessionId);
     return text;
   }finally{
+    clearTimeout(terminalTimer);
     collecting=false;
     if(sessionId)rpc.notify("session/cancel",{sessionId});
     rpc.close();

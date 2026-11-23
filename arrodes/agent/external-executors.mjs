@@ -257,7 +257,7 @@ function resolveBackend(executor, config, context = {}) {
   if(executor==="workbuddy"){
     const runtime=workbuddyRuntime();
     if(!runtime)throw new Error("WorkBuddy 原生 Harness 入口未配置或不可启动，请连接本机原生入口；不会降级到其他智能体。");
-    return async({cwd,input,writing})=>runAcpAgent(runtime,{cwd,input,writing,session:await nativeSession(executor,context),
+    return async({cwd,input,writing})=>runAcpAgent({ ...runtime, connectionProbe: context.connectionProbe },{cwd,input,writing,session:await nativeSession(executor,context),
       model:context.settings?.modelId,approveAction:context.approveAction,onProgress:context.onProgress,label:"WorkBuddy"});
   }
   if (executor === "hermes") {
@@ -321,7 +321,7 @@ async function runBackendPrompt(run, workspaceDir, input, writing = false) {
 }
 
 export async function testExecutorConnection(executor) {
-  const run = resolveBackend(executor, null);
+  const run = resolveBackend(executor, null, { connectionProbe: true });
   const token = createHash("sha256").update(String(Date.now())).digest("hex").slice(0, 12);
   const reply = await runBackendPrompt(run, null, `这是连接检查。请勿调用工具，只返回连接码 ${token}。`);
   if (!reply.includes(token)) throw new Error("执行器已回复，但未返回正确的连接码。");

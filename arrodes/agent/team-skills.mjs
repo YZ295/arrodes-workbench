@@ -84,7 +84,7 @@ function readInstructions(bytes, path) {
   return { id, name, description, instructions };
 }
 
-export function createTeamSkillStore(dataDir) {
+export function createTeamSkillStore(dataDir, validateReplacement) {
   const file = join(dataDir, "team-skills.json");
   function list() {
     let imported;
@@ -103,21 +103,26 @@ export function createTeamSkillStore(dataDir) {
     }
     return [...builtIn, ...imported];
   }
-  function importMarkdown(bytes, path, scenarios = "") {
-    const skill = readInstructions(bytes, path);
+  function saveImported(imported) {
+    mkdirSync(dataDir, { recursive: true });
+    const pending = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(pending, JSON.stringify(imported, null, 2), "utf8");
+    renameSync(pending, file);
+  }
+  function importMarkdown(bytes, path, scenarios = "", stableId) {
+    const parsed = readInstructions(bytes, path);
+    const skill = stableId ? { ...parsed, id: stableId } : parsed;
     if (typeof scenarios !== "string" || scenarios.length > 320) throw new Error("适用场景最多 320 字。");
     const triggers = [...new Set(scenarios.split(/[,，、\n]/).map(normalize).filter((term) => term.length >= 2))];
     if (scenarios.trim() && !triggers.length) throw new Error("请填写至少一个两个字以上的场景关键词。");
     const current = list();
     const imported = current.filter(({ id }) => id.startsWith("local-"));
     const existing = imported.find(({ id }) => id === skill.id);
-    if (existing && !triggers.length) return skill.id;
-    if (existing) existing.triggers = triggers;
+    if (existing && !stableId && !triggers.length) return skill.id;
+    if (existing) Object.assign(existing, skill, { triggers: triggers.length ? triggers : existing.triggers ?? [] });
     else imported.push({ ...skill, triggers });
-    mkdirSync(dataDir, { recursive: true });
-    const pending = `${file}.${randomUUID()}.tmp`;
-    writeFileSync(pending, JSON.stringify(imported, null, 2), "utf8");
-    renameSync(pending, file);
+    if (existing && stableId) validateReplacement?.(skill.id, [...builtIn, ...imported]);
+    saveImported(imported);
     return skill.id;
   }
   return {
@@ -125,6 +130,9 @@ export function createTeamSkillStore(dataDir) {
     catalog: () => list().map(({ id, name, description, triggers }) => ({ id, name, description, triggers })),
     importFile: (path, scenarios) => importMarkdown(readMarkdownFile(path), path, scenarios),
     importMarkdown,
+    remove(id) {
+      saveImported(list().filter((skill) => skill.id.startsWith("local-") && skill.id !== id));
+    },
   };
 }
 

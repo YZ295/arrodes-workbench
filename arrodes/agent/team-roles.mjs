@@ -28,6 +28,13 @@ export function createTeamRoleStore(dataDir) {
     return saved;
   }
 
+  function save(roles) {
+    mkdirSync(dataDir, { recursive: true });
+    const pending = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(pending, JSON.stringify(roles, null, 2), "utf8");
+    renameSync(pending, file);
+  }
+
   function create(input, reservedNames, skillIds = []) {
     const candidate = {
       name: typeof input?.name === "string" ? input.name.trim() : "",
@@ -46,12 +53,13 @@ export function createTeamRoleStore(dataDir) {
       return { ok: false, error: "已有同名角色，请换一个名称。" };
     }
     saved.push({ id: `role-${randomUUID()}`, ...candidate });
-    mkdirSync(dataDir, { recursive: true });
-    const pending = `${file}.${randomUUID()}.tmp`;
-    writeFileSync(pending, JSON.stringify(saved, null, 2), "utf8");
-    renameSync(pending, file);
+    save(saved);
     return { ok: true, roles: saved };
   }
 
-  return { list, create };
+  return { list, create, unlinkSkill(id) {
+    const roles = list();
+    if (!roles.some((role) => role.skillIds?.includes(id))) return;
+    save(roles.map((role) => role.skillIds?.includes(id) ? { ...role, skillIds: role.skillIds.filter((item) => item !== id) } : role));
+  } };
 }

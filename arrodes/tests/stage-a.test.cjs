@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { once } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } = require('node:fs/promises');
 const { createServer } = require('node:http');
@@ -282,12 +284,19 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
 
   try {
     const { page, data } = await launch();
+    await page.getByRole('button', { name: '默认工作区：项目记忆', exact: true }).click({ timeout: 3000 });
+    const memory = page.getByRole('dialog', { name: '项目记忆' });
+    await memory.getByLabel('下一步').fill('只在默认工作区使用的接续暗号');
+    await memory.getByRole('button', { name: '保存', exact: true }).click();
+    await memory.waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '插件市场', exact: true }).click({ timeout: 3000 });
     await page.getByRole('searchbox', { name: '搜索插件' }).fill('接续项目');
     const projectSkill = page.getByRole('article', { name: '接续项目' });
     await projectSkill.getByRole('button', { name: '安装', exact: true }).click();
     await page.getByRole('button', { name: '已安装', exact: true }).click();
     await projectSkill.getByText('已安装', { exact: true }).waitFor();
+    await projectSkill.getByRole('button', { name: '查看来源', exact: true }).click();
+    await projectSkill.getByText(/github.com\/YZ295\/arrodes-workbench/).waitFor();
     await page.getByRole('button', { name: '发现', exact: true }).click();
     await page.getByRole('searchbox', { name: '搜索插件' }).fill('');
     await page.getByRole('button', { name: '主题', exact: true }).click();
@@ -312,6 +321,10 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await theme.getByRole('button', { name: '恢复默认主题', exact: true }).click();
     await page.waitForFunction(() => !document.documentElement.dataset.marketTheme);
     assert.deepEqual(await getOverlay(), { color: '#ffffff', symbolColor: '#172033', height: 32 });
+    await page.getByRole('button', { name: '已安装', exact: true }).click();
+    await theme.getByRole('button', { name: '卸载', exact: true }).click();
+    await theme.getByRole('button', { name: '确认卸载', exact: true }).click();
+    await theme.waitFor({ state: 'hidden' });
     await writeFile(join(data, 'connection-plugins.json'), JSON.stringify({ workbuddy: { enabled: true } }));
     await page.getByRole('button', { name: 'Agent 预设', exact: true }).click();
     const workBuddy = page.getByRole('article', { name: 'WorkBuddy' });
@@ -415,6 +428,10 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await page.getByLabel('工作区名称').fill(workspaceName);
     await page.getByRole('button', { name: '创建', exact: true }).click();
     const workspace = join(data, 'workspaces', workspaceName);
+    await page.getByRole('button', { name: `${workspaceName}：项目记忆`, exact: true }).click();
+    await memory.getByLabel('决定').fill('从来源文件核对记录');
+    await memory.getByRole('button', { name: '保存', exact: true }).click();
+    await memory.waitFor({ state: 'hidden' });
     const answers = [modelGreeting, workspace, '你想让我重点看什么？', '好，先停在这里。'];
     for (let i = 0; i < questions.length; i++) await send(page, questions[i], answers[i]);
     const formatted = page.locator('.bubble.assistant').filter({ hasText: '你想让我重点看什么？' });
@@ -423,6 +440,8 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     assert.equal(await formatted.locator('li code').innerText(), 'math.js');
     assert.equal(await formatted.locator('img').count(), 0);
     assert.equal(requests.length, questions.length);
+    assert.match(requests[0][0].content, /从来源文件核对记录/);
+    assert.ok(requests[0].every(({ content }) => !content.includes('只在默认工作区使用的接续暗号')));
     assert.ok(requests.every((messages) => !messages.some(({ role }) => role === 'tool')));
     assert.deepEqual(await readdir(workspace), []);
     assert.ok(requests[1].some(({ role, content }) => role === 'assistant' && content === modelGreeting));
@@ -861,5 +880,68 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await new Promise((done) => server.close(done));
     await rm(profile, { recursive: true, force: true, maxRetries: 5 });
     await rm(outside, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test('强制退出后恢复已写文件和项目记忆，且不会重放', { timeout: 35000 }, async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'arrodes-crash-'));
+  let witnessedWrite;
+  const waiting = new Promise((resolve) => { witnessedWrite = resolve; });
+  let writeRequests = 0;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const { messages } = JSON.parse(Buffer.concat(chunks));
+    if (messages.some(({ role }) => role === 'tool')) {
+      witnessedWrite();
+      return;
+    }
+    writeRequests++;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ choices: [{ message:
+      toolCall('write_file', { path: 'interrupted.txt', content: '已写入的证据' }) }] }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  let app;
+  const launch = async () => {
+    app = await _electron.launch({
+      ...(binary ? { executablePath: binary } : {}),
+      args: [...(binary ? [] : [source]), '--user-data-dir=' + profile],
+      env: { ...process.env, APPDATA: profile },
+    });
+    return app.firstWindow();
+  };
+  try {
+    let page = await launch();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByLabel('接口地址').fill('http://127.0.0.1:' + server.address().port + '/v1');
+    await page.getByLabel('模型', { exact: true }).fill('crash-fixture');
+    await page.getByLabel('API Key').fill(randomUUID());
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByRole('button', { name: '默认工作区：项目记忆', exact: true }).click();
+    await page.getByLabel('下一步', { exact: true }).fill('先核查已经写出的文件');
+    await page.getByRole('dialog', { name: '项目记忆' }).getByRole('button', { name: '保存', exact: true }).click();
+    await page.locator('#input').fill('在工作区生成 interrupted.txt');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await waiting;
+    const child = app.process();
+    const exited = once(child, 'exit');
+    if (process.platform === 'win32') execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+    else child.kill('SIGKILL');
+    await exited;
+    app = undefined;
+    page = await launch();
+    await page.getByText(/上次任务中断/).waitFor();
+    await page.getByText(/收到写入回执的文件：interrupted\.txt/).waitFor();
+    assert.equal(writeRequests, 1);
+    assert.equal(await readFile(join(profile, 'data', 'workspaces', '默认工作区', 'interrupted.txt'), 'utf8'), '已写入的证据');
+    await page.getByRole('button', { name: '默认工作区：项目记忆', exact: true }).click();
+    assert.equal(await page.getByLabel('下一步', { exact: true }).inputValue(), '先核查已经写出的文件');
+  } finally {
+    if (app) await app.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(profile, { recursive: true, force: true, maxRetries: 3 });
   }
 });

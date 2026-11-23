@@ -155,7 +155,7 @@ function describeEvent(event, labels) {
   }
 }
 
-export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult, mcpForRole, clarifyFollowUp, externalRunner = runExternalTask, coordinatorRunner = runExternalPrompt, executorStateRoot }) {
+export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult, mcpForRole, clarifyFollowUp, externalRunner = runExternalTask, coordinatorRunner = runExternalPrompt, executorStateRoot, projectContext = "", onOutput }) {
   const catalog = getTeamRoles(customRoles);
   let graph;
   try {
@@ -179,7 +179,7 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
     return ask(configFor(id), stage, instructions, input, skillContext, run);
   };
   const askCoordinator = (stage, instructions, input, skillContext) =>
-    askRole("coordinator", stage, instructions, input, skillContext);
+    askRole("coordinator", stage, instructions + projectContext, input, skillContext);
   const skillById = new Map(skills.map((skill) => [skill.id, skill]));
   const overrides = new Map((graph?.nodes ?? []).map(({ id, skillIds }) => [id, skillIds]));
   const roleSkills = new Map(catalog.map(({ id, skillIds }) =>
@@ -446,6 +446,7 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
           instructions: taskSkills.instructions, onProgress, approveAction,
           settings: settingsFor(roleId), roleId, stateRoot: executorStateRoot,
         });
+        result.outputs.forEach((path) => onOutput?.(path));
         return {
           artifacts: [
             { taskId: task.taskId, kind: "note", ref: task.taskId, summary: result.text },

@@ -4,10 +4,12 @@ import { isArrodesSource } from "./agent/creator-mode.mjs";
 import { launchWindowsDesktop } from "./agent/desktop-launch.mjs";
 import { app, BrowserWindow, dialog, Menu, ipcMain, net, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { runAgentTurn, safePath } from "./agent/loop.mjs";
+import { FILE_WRITING_TOOLS } from "./agent/basic-tools.mjs";
+import { createProjectNotes, projectNotePrompt, recoverInterruptedConversation } from "./agent/project-notes.mjs";
 import { DEEPSEEK_API, DEEPSEEK_FLASH, deepSeekModelId } from "./agent/deepseek.mjs";
 import { listAvailableModels, resolveModelConnection, testModelConnection } from "./agent/model-connection.mjs";
 import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
@@ -35,12 +37,13 @@ const DEFAULT_WORKSPACE = "默认工作区";
 const workspaces = createWorkspaceStore(DATA_DIR);
 const teamRoles = createTeamRoleStore(DATA_DIR);
 const teamCanvases = createTeamCanvasStore(DATA_DIR);
-const teamSkills = createTeamSkillStore(DATA_DIR);
+const teamSkills = createTeamSkillStore(DATA_DIR, validateSkillReplacement);
+const projectNotes = createProjectNotes(DATA_DIR);
 const mcpTools = createMcpToolStore(DATA_DIR);
 const connectionPlugins = createConnectionPluginStore(DATA_DIR);
 useConnectionPlugins(connectionPlugins.list);
 const marketplace = createMarketplace({ dataDir: DATA_DIR, teamSkills,
-  fetcher: (url, options) => net.fetch(url, options), checkIdle: requireIdle });
+  fetcher: (url, options) => net.fetch(url, options), checkIdle: requireIdle, checkSkillUnused });
 const titleBarHeight = 32;
 
 let win = null;
@@ -186,9 +189,49 @@ ipcMain.handle("workspaces:open", async (_event, id) => {
 
 ipcMain.handle("chat:get", () => conversation);
 ipcMain.handle("chat:roles", () => getTeamRoles(teamRoles.list()));
+ipcMain.handle("projects:notes", (_event, id) => {
+  if (!workspaces.get(id)) throw new Error("找不到工作区。");
+  return projectNotes.get(id);
+});
+ipcMain.handle("projects:saveNotes", (_event, id, notes) => {
+  try {
+    if (!workspaces.get(id)) throw new Error("找不到工作区。");
+    return { ok: true, notes: projectNotes.edit(id, notes) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
 
 function requireIdle() {
-  if (turnRunning) throw new Error("请在当前任务结束后修改 MCP 配置。");
+  if (turnRunning) throw new Error("请在当前任务结束后修改工具或插件配置。");
+}
+
+function checkSkillUnused(id, unlink) {
+  const roles = teamRoles.list().filter((role) => role.skillIds?.includes(id)).map(({ name }) => name);
+  const projects = Object.entries(teamCanvases.list()).filter(([, graph]) =>
+    graph.nodes?.some((node) => node.skillIds?.includes(id))).map(([workspaceId]) => workspaces.get(workspaceId)?.name ?? workspaceId);
+  if (roles.length || projects.length) {
+    if (!unlink) {
+      const error = new Error(`该技能仍被 ${[...roles, ...projects].join("、")} 使用。`);
+      error.code = "SKILL_IN_USE";
+      throw error;
+    }
+    teamRoles.unlinkSkill(id);
+    teamCanvases.unlinkSkill(id);
+  }
+}
+
+function validateSkillReplacement(id, skills) {
+  const available = new Map(skills.map((entry) => [entry.id, entry]));
+  const assignments = [...teamRoles.list(), ...Object.values(teamCanvases.list()).flatMap(({ nodes }) => nodes ?? [])];
+  for (const { skillIds } of assignments) {
+    if (skillIds?.includes(id)) validateSkillIds(skillIds, available);
+  }
+}
+
+function applyWindowColors({ windowColors }) {
+  win?.setTitleBarOverlay({ ...windowColors, height: titleBarHeight });
+  win?.setBackgroundColor(windowColors.color);
 }
 
 ipcMain.handle("mcp:list", () => mcpTools.list());
@@ -326,18 +369,26 @@ ipcMain.handle("plugins:test", async (_event, id) => {
 });
 
 ipcMain.handle("marketplace:get", (_event, online) => online === true ? marketplace.refresh() : marketplace.snapshot());
-ipcMain.handle("marketplace:install", async (_event, id) => {
+ipcMain.handle("marketplace:install", async (_event, id, update) => {
   try {
-    return { ok: true, market: await marketplace.install(id), skills: teamSkills.catalog() };
+    return { ok: true, market: await marketplace.install(id, update === true), skills: teamSkills.catalog() };
   } catch (error) {
     return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle("marketplace:remove", (_event, id, unlink) => {
+  try {
+    const market = marketplace.remove(id, unlink === true);
+    applyWindowColors(market);
+    return { ok: true, market, skills: teamSkills.catalog() };
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code };
   }
 });
 ipcMain.handle("marketplace:theme", (_event, id) => {
   try {
     const market = marketplace.theme(id);
-    win?.setTitleBarOverlay({ ...market.windowColors, height: titleBarHeight });
-    win?.setBackgroundColor(market.windowColors.color);
+    applyWindowColors(market);
     return { ok: true, market };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -468,10 +519,21 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
     const workspace = workspaces.get(origin.workspaceId);
     const workspaceDir = workspace?.available ? workspace.path : null;
     if (mode !== "team" && !workspaceDir) return { kind: "unavailable", text: "工作区位置不可用，请检查文件夹或磁盘。" };
-    if (!origin.history.length) writeConversation(origin);
     if (mode === "creator" && !await isArrodesSource(workspaceDir, app.getAppPath())) {
       return { kind: "unavailable", text: "创造模式需要在项目中打开独立的 Arrodes Git 源码副本。" };
     }
+    const projectContext = workspaceDir ? projectNotePrompt(projectNotes.get(origin.workspaceId)) : "";
+    const activeRun = { input, step: "任务已接收", files: [] };
+    const persistRun = () => writeConversation({ ...origin, activeRun });
+    persistRun();
+    const recordOutput = (path) => {
+      if (!workspaceDir || typeof path !== "string") return;
+      let file;
+      try { file = relative(workspaceDir, safePath(workspaceDir, path)); } catch { return; }
+      if (!file || activeRun.files.includes(file)) return;
+      activeRun.files.push(file);
+      persistRun();
+    };
     let result;
     const executions = [];
     let approvalQueue = Promise.resolve();
@@ -486,6 +548,8 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
         text: taskText,
         creator: mode === "creator",
         history: origin.history.filter(({ role }) => role !== "error").slice(-12),
+        projectContext,
+        onOutput: recordOutput,
         workspaceDir,
         config,
         executorStateRoot: join(DATA_DIR, "executor-state"),
@@ -501,7 +565,8 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
         openItem: (path) => shell.openPath(path),
         launchDesktop: (target) => launchWindowsDesktop(target, (url) => shell.openExternal(url)),
         approveAction,
-        onToolResult: (tool, outcome) => {
+        onToolResult: (tool, outcome, args) => {
+          if (outcome.ok && FILE_WRITING_TOOLS.has(tool)) recordOutput(args?.path);
           if (tool === "run_powershell" && executions.length < 24) {
             executions.push({
               ok: outcome.ok, cancelled: outcome.cancelled === true,
@@ -510,12 +575,19 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
           }
         },
         onCanvasEvent: (event) => win?.webContents?.send("canvas:event", { conversationId: origin.id, event }),
-        onProgress: (line) => win?.webContents?.send("chat:progress", { conversationId: origin.id, line }),
+        onProgress: (line) => {
+          activeRun.step = String(line).slice(0, 300);
+          persistRun();
+          win?.webContents?.send("chat:progress", { conversationId: origin.id, line });
+        },
       });
     } catch {
       result = { kind: "error", text: "无法连接模型，请检查网络和模型设置。" };
     }
-    if (result.kind === "unavailable") return result;
+    if (result.kind === "unavailable") {
+      writeConversation(origin);
+      return result;
+    }
     if (result.kind === "clarify") result.clarification = pendingClarification(result.clarification, mode === "team" ? "team" : "chat", taskText);
     if (result.kind !== "clarify" && (!confirmed || result.kind === "error")) result.clarification = pending;
     if (executions.length) result = { ...result, executions };
@@ -529,6 +601,8 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
     };
     writeConversation(completed);
     if (conversation.id === origin.id) conversation = completed;
+    try { projectNotes.recordRun(origin.workspaceId, activeRun, result.kind === "error" ? "failed" : "returned"); }
+    catch { console.warn("无法将本轮文件回执保存到项目记忆。"); }
     return result;
   } catch {
     return { kind: "error", text: "无法访问工作区或保存会话，请检查本地目录后重试。" };
@@ -573,7 +647,16 @@ function createWindow() {
 
 app.whenReady().then(() => {
   workspaces.create(DEFAULT_WORKSPACE);
-  conversation = loadConversations().find((entry) => entry.archived !== true) ?? newConversation(DEFAULT_WORKSPACE);
+  const restored = loadConversations().map((entry) => {
+    if (!entry.activeRun) return entry;
+    const recovered = recoverInterruptedConversation(entry);
+    try { projectNotes.recordRun(entry.workspaceId, entry.activeRun, "interrupted"); }
+    catch { console.warn("无法将任务中断保存到项目记忆。"); }
+    try { writeConversation(recovered); }
+    catch { console.warn("无法保存任务中断后的会话。"); }
+    return recovered;
+  });
+  conversation = restored.find((entry) => entry.archived !== true) ?? newConversation(DEFAULT_WORKSPACE);
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

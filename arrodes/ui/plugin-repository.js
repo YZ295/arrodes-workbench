@@ -117,12 +117,42 @@ function pluginRepository() {
     const installed = Object.hasOwn(market.installed, entry.id);
     const isTheme = entry.kind === "theme";
     const status = el("p", { class: "hint", role: "status" });
-    const install = control("安装", async () => {
-      const result = await action(install, status, "正在安装…",
-        () => app.installMarketPlugin(entry.id), "已安装。");
+    const canUpdate = market.updates.includes(entry.id);
+    const install = control(installed ? "更新" : "安装", async () => {
+      const result = await action(install, status, installed ? "正在更新…" : "正在安装…",
+        () => app.installMarketPlugin(entry.id, installed), installed ? "已更新。" : "已安装。");
       if (result?.ok) {
         teamCanvas.refreshSkills(result.skills);
         update(result.market);
+      }
+    });
+    const source = el("details", { class: "hint" }, el("summary", {}, "来源"),
+      el("p", {}, entry.source ?? "随 Arrodes 应用提供"));
+    const sourceButton = control("查看来源", () => { source.open = !source.open; });
+    let confirmed = false;
+    let unlink = false;
+    const remove = control("卸载", async () => {
+      if (!confirmed) {
+        confirmed = true;
+        remove.textContent = "确认卸载";
+        return;
+      }
+      const result = await action(remove, status, "正在卸载…", () => app.removeMarketPlugin(entry.id, unlink), "已卸载。");
+      if (result?.ok) {
+        teamCanvas.refreshSkills(result.skills);
+        if (unlink) {
+          const workspace = state.workspace;
+          const canvas = await app.getCanvas(workspace).catch(() => null);
+          if (canvas && state.workspace === workspace) teamCanvas.refreshConfiguration(canvas);
+        }
+        update(result.market);
+      } else if (result?.code === "SKILL_IN_USE") {
+        unlink = true;
+        remove.textContent = "解除绑定并卸载";
+      } else {
+        confirmed = false;
+        unlink = false;
+        remove.textContent = "卸载";
       }
     });
     const active = market.theme === entry.id;
@@ -137,8 +167,11 @@ function pluginRepository() {
       el("p", {}, entry.description),
       el("div", { class: "market-card-footer" },
         el("span", { class: "hint" }, `${isTheme ? "主题" : "Skill"} · ${entry.category}`),
-        ...(installed && isTheme ? [apply] : [])),
-      status);
+        el("div", { class: "repository-actions" }, sourceButton,
+          ...(installed && isTheme ? [apply] : []),
+          ...(installed && canUpdate ? [install] : []),
+          ...(installed && page === "已安装" ? [remove] : []))),
+      source, status);
   }
 
   function drawEntries() {
@@ -191,7 +224,7 @@ function pluginRepository() {
     drawEntries();
     const next = await app.getMarketplace(true);
     syncing = false;
-    update({ ...market, catalog: next.catalog, source: next.source });
+    update({ ...market, catalog: next.catalog, source: next.source, updates: next.updates });
   }).catch(() => { marketStatus.textContent = "无法读取插件目录，请重新打开插件市场。"; });
   return el("div", { class: "repository" }, tabs, content);
 }
