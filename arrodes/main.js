@@ -14,7 +14,7 @@ import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
 import { createTeamRoleStore } from "./agent/team-roles.mjs";
 import { teamExecutorOptions, testExecutorConnection, useConnectionPlugins } from "./agent/external-executors.mjs";
 import { createConnectionPluginStore } from "./agent/connection-plugins.mjs";
-import { createMarketplace } from "./agent/marketplace.mjs";
+import { createMarketplace, defaultWindowColors } from "./agent/marketplace.mjs";
 import { createTeamCanvasStore } from "./agent/team-canvas.mjs";
 import { createTeamSkillStore, validateSkillIds, selectSkills, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
 import { fetchGithubSkill } from "./agent/github-skills.mjs";
@@ -41,6 +41,7 @@ const connectionPlugins = createConnectionPluginStore(DATA_DIR);
 useConnectionPlugins(connectionPlugins.list);
 const marketplace = createMarketplace({ dataDir: DATA_DIR, teamSkills,
   fetcher: (url, options) => net.fetch(url, options), checkIdle: requireIdle });
+const titleBarHeight = 32;
 
 let win = null;
 let conversation;
@@ -334,7 +335,10 @@ ipcMain.handle("marketplace:install", async (_event, id) => {
 });
 ipcMain.handle("marketplace:theme", (_event, id) => {
   try {
-    return { ok: true, market: marketplace.theme(id) };
+    const market = marketplace.theme(id);
+    win?.setTitleBarOverlay({ ...market.windowColors, height: titleBarHeight });
+    win?.setBackgroundColor(market.windowColors.color);
+    return { ok: true, market };
   } catch (error) {
     return { ok: false, error: error.message };
   }
@@ -534,15 +538,17 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
 });
 
 function createWindow() {
+  let windowColors = defaultWindowColors;
+  try { windowColors = marketplace.snapshot().windowColors; } catch {}
   win = new BrowserWindow({
     width: 980,
     height: 720,
     minWidth: 760,
     minHeight: 560,
-    backgroundColor: "#ffffff",
+    backgroundColor: windowColors.color,
     title: "谦卑之心",
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#ffffff", symbolColor: "#172033", height: 32 },
+    titleBarOverlay: { ...windowColors, height: titleBarHeight },
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,

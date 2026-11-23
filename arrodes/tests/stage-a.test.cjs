@@ -292,13 +292,26 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await page.getByRole('searchbox', { name: '搜索插件' }).fill('');
     await page.getByRole('button', { name: '主题', exact: true }).click();
     const theme = page.getByRole('article', { name: '夜读' });
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      const apply = win.setTitleBarOverlay.bind(win);
+      win.themeOverlayUpdates = [];
+      win.setTitleBarOverlay = (options) => {
+        apply(options);
+        win.themeOverlayUpdates.push(options);
+      };
+    });
     await theme.getByRole('button', { name: '安装', exact: true }).click();
     await theme.getByRole('button', { name: '应用', exact: true }).click();
     await page.waitForFunction(() => document.documentElement.dataset.marketTheme === 'night');
+    const getOverlay = () => app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].themeOverlayUpdates.at(-1));
+    assert.deepEqual(await getOverlay(), { color: '#111b2e', symbolColor: '#edf3fc', height: 32 });
     const installedMarket = JSON.parse(await readFile(join(data, 'marketplace.json'), 'utf8'));
     assert.equal(installedMarket.theme, 'night');
     await theme.getByRole('button', { name: '恢复默认主题', exact: true }).click();
     await page.waitForFunction(() => !document.documentElement.dataset.marketTheme);
+    assert.deepEqual(await getOverlay(), { color: '#ffffff', symbolColor: '#172033', height: 32 });
     await writeFile(join(data, 'connection-plugins.json'), JSON.stringify({ workbuddy: { enabled: true } }));
     await page.getByRole('button', { name: 'Agent 预设', exact: true }).click();
     const workBuddy = page.getByRole('article', { name: 'WorkBuddy' });

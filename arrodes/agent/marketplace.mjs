@@ -8,6 +8,8 @@ const bundled = JSON.parse(readFileSync(new URL("./marketplace/catalog.json", im
   .filter(({ distribution }) => distribution !== "remote");
 const fields = { id: 64, kind: 12, category: 40, name: 64, description: 280, author: 64, version: 30 };
 const limit = 96 * 1024;
+export const defaultWindowColors = { color: "#ffffff", symbolColor: "#172033" };
+const nightWindowColors = { color: "#111b2e", symbolColor: "#edf3fc" };
 
 function readEntry(value) {
   if (!value || Object.entries(fields).some(([field, max]) =>
@@ -42,7 +44,8 @@ export function createMarketplace({ dataDir, teamSkills, fetcher, checkIdle }) {
 
   function snapshot() {
     const { installed, theme } = load();
-    return { catalog: [...catalog.values()], installed, theme, source };
+    const windowColors = theme === "night" ? nightWindowColors : defaultWindowColors;
+    return { catalog: [...catalog.values()], installed, theme, source, windowColors };
   }
 
   async function refresh() {

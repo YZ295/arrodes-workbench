@@ -109,7 +109,7 @@ function pluginRepository() {
 
   function update(next) {
     market = next;
-    applyMarketTheme(next.theme);
+    applyMarketTheme(next);
     drawEntries();
   }
 
@@ -196,7 +196,15 @@ function pluginRepository() {
   return el("div", { class: "repository" }, tabs, content);
 }
 
-function applyMarketTheme(theme) {
-  if (theme) document.documentElement.dataset.marketTheme = theme;
-  else delete document.documentElement.dataset.marketTheme;
+function applyMarketTheme(market) {
+  const root = document.documentElement;
+  if (market?.theme === "night") {
+    root.style.setProperty("--market-window-surface", market.windowColors.color);
+    root.style.setProperty("--market-window-ink", market.windowColors.symbolColor);
+    root.dataset.marketTheme = market.theme;
+  } else {
+    delete root.dataset.marketTheme;
+    root.style.removeProperty("--market-window-surface");
+    root.style.removeProperty("--market-window-ink");
+  }
 }

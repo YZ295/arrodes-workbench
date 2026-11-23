@@ -31,10 +31,10 @@
   }
   html[data-market-theme="night"] {
     color-scheme: dark;
-    --surface: #111b2e;
+    --surface: var(--market-window-surface);
     --sidebar: #152239;
     --panel: #192840;
-    --ink: #edf3fc;
+    --ink: var(--market-window-ink);
     --text: #d7e2f2;
     --muted: #aebfd6;
     --line: #3a4e6a;
@@ -1112,7 +1112,7 @@ Promise.all([
   window.arrodes.listWorkspaces(), window.arrodes.listConversations(),
   window.arrodes.getMarketplace(false).catch(() => null),
 ]).then(([config, conversation, workspaces, sessions, market]) => {
-  applyMarketTheme(market?.theme);
+  applyMarketTheme(market);
   state.configured = config.configured;
   state.workspaces = workspaces;
   state.sessions = sessions;
