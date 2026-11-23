@@ -18,6 +18,8 @@
 
 有对应安装时会检测到连接器。也可以在启动 Arrodes 前设置以下环境变量，然后重新打开应用。检测到安装后，请在界面测试连接。
 
+卡片显示「未检测到」时，请先确认原生运行入口已安装或配置。通过连接测试后才会显示角色绑定。WorkBuddy 需要兼容的 Harness 入口，仅安装桌面客户端无法确认连接。
+
 | Agent | 可选环境变量 |
 | --- | --- |
 | Claude Code | `ARRODES_CLAUDE_SDK`（本机 SDK 入口），`CLAUDE_CODE_EXECUTABLE`（本机 CLI） |

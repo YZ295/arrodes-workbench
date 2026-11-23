@@ -158,6 +158,10 @@ export function teamExecutorOptions() {
       available: enabled && detected && (id === "builtin" || !plugins || Boolean(verifiedAt)),
       reason: !enabled ? "请先在插件仓库启用" : detected ? "请先通过连接测试" : status[id].reason,
       ...(id === "codex" ? { executable: plugins?.codex?.executable ?? "", detectedPath: codexPath ?? "" } : {}),
+      ...(id === "workbuddy" ? {
+        missingTitle: "未检测到可用的 WorkBuddy Harness",
+        setup: "需要兼容的 WorkBuddy Harness。仅安装桌面客户端无法确认连接。已有兼容入口时，设置 ARRODES_WORKBUDDY_ACP 为其绝对路径，再重启 Arrodes。",
+      } : {}),
     };
   });
 }

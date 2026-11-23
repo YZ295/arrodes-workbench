@@ -39,9 +39,10 @@ function pluginRepository() {
 
   function connection(plugin, bound) {
     const { id, name, enabled, detected, verifiedAt, executable, detectedPath } = plugin;
-    const status = el("p", { class: "hint", role: "status" },
-      [enabled ? "已启用" : "未启用", detected ? "已检测到" : "未检测到",
-        verifiedAt ? "连接已验证" : "连接未验证", ...(bound ? ["当前工作区已绑定"] : [])].join(" · "));
+    const status = el("p", { class: "hint", role: "status" }, detected
+      ? [enabled ? "已启用" : "未启用", "已检测到",
+        verifiedAt ? "连接已验证" : "连接未验证", ...(bound ? ["当前工作区已绑定"] : [])].join(" · ")
+      : plugin.missingTitle ?? "未检测到本机运行入口");
     const resultMessage = el("p", { class: "hint", role: "status" });
     const path = id === "codex" ? el("input", { type: "text", value: executable, placeholder: "留空使用自动检测" }) : null;
     const toggle = control(enabled ? "停用" : "启用", async () => {
@@ -54,7 +55,6 @@ function pluginRepository() {
       if (result?.ok) await reload();
       else if (result) status.textContent = "已启用 · 已检测到 · 连接未验证";
     });
-    test.disabled = !detected;
     const save = control("保存路径", async () => {
       const result = await action(save, resultMessage, "正在保存…",
         () => app.saveConnectionPlugin(id, { enabled, executable: path.value.trim() }), "已保存。");
@@ -65,11 +65,11 @@ function pluginRepository() {
       render();
       void openTeamRoles();
     });
-    bind.disabled = !verifiedAt;
     return el("article", { class: "repository-entry", "aria-label": name },
-      el("h3", {}, name), status, el("p", { class: "hint" }, plugin.detail),
+      el("h3", {}, name), status, el("p", { class: "hint" }, detected ? plugin.detail : plugin.setup ?? plugin.detail),
       ...(path ? [field("Codex CLI 路径", path), ...(detectedPath ? [el("p", { class: "hint" }, detectedPath)] : [])] : []),
-      el("div", { class: "repository-actions" }, toggle, ...(path ? [save] : []), ...(enabled ? [test, bind] : [])),
+      el("div", { class: "repository-actions" }, ...(detected || enabled ? [toggle] : []),
+        ...(path ? [save] : []), ...(enabled && detected ? [test] : []), ...(enabled && verifiedAt ? [bind] : [])),
       resultMessage);
   }
 

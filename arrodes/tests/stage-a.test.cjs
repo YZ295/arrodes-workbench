@@ -262,6 +262,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_OPTIONS;
   delete env.AEW_NODE;
+  delete env.ARRODES_WORKBUDDY_ACP;
   let app;
   async function launch() {
     app = await _electron.launch({
@@ -298,11 +299,21 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     assert.equal(installedMarket.theme, 'night');
     await theme.getByRole('button', { name: '恢复默认主题', exact: true }).click();
     await page.waitForFunction(() => !document.documentElement.dataset.marketTheme);
+    await writeFile(join(data, 'connection-plugins.json'), JSON.stringify({ workbuddy: { enabled: true } }));
     await page.getByRole('button', { name: 'Agent 预设', exact: true }).click();
+    const workBuddy = page.getByRole('article', { name: 'WorkBuddy' });
+    await workBuddy.getByText('未检测到可用的 WorkBuddy Harness', { exact: true }).waitFor({ timeout: 2500 });
+    assert.equal(await workBuddy.getByRole('button', { name: '测试连接' }).count(), 0);
+    assert.equal(await workBuddy.getByRole('button', { name: '绑定角色' }).count(), 0);
+    await workBuddy.getByRole('button', { name: '停用', exact: true }).click();
     const codexPlugin = page.getByRole('article', { name: 'Codex' });
-    await codexPlugin.getByRole('button', { name: '启用' }).click();
-    await codexPlugin.getByRole('button', { name: '测试连接' }).waitFor();
-    assert.equal(JSON.parse(await readFile(join(data, 'connection-plugins.json'), 'utf8')).codex.enabled, true);
+    await codexPlugin.getByLabel('Codex CLI 路径').waitFor();
+    const enableCodex = codexPlugin.getByRole('button', { name: '启用' });
+    if (await enableCodex.count()) {
+      await enableCodex.click();
+      await codexPlugin.getByRole('button', { name: '测试连接' }).waitFor();
+      assert.equal(JSON.parse(await readFile(join(data, 'connection-plugins.json'), 'utf8')).codex.enabled, true);
+    }
     const imported = JSON.parse(await readFile(join(data, 'team-skills.json'), 'utf8'));
     assert.equal(imported[0].name, '接续项目');
     await page.getByRole('button', { name: '返回对话', exact: true }).click();
