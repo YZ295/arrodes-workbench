@@ -14,6 +14,7 @@ import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
 import { createTeamRoleStore } from "./agent/team-roles.mjs";
 import { teamExecutorOptions, testExecutorConnection, useConnectionPlugins } from "./agent/external-executors.mjs";
 import { createConnectionPluginStore } from "./agent/connection-plugins.mjs";
+import { createMarketplace } from "./agent/marketplace.mjs";
 import { createTeamCanvasStore } from "./agent/team-canvas.mjs";
 import { createTeamSkillStore, validateSkillIds, selectSkills, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
 import { fetchGithubSkill } from "./agent/github-skills.mjs";
@@ -38,7 +39,8 @@ const teamSkills = createTeamSkillStore(DATA_DIR);
 const mcpTools = createMcpToolStore(DATA_DIR);
 const connectionPlugins = createConnectionPluginStore(DATA_DIR);
 useConnectionPlugins(connectionPlugins.list);
-const repositorySkillPath = "agent/skills/project-resume/SKILL.md";
+const marketplace = createMarketplace({ dataDir: DATA_DIR, teamSkills,
+  fetcher: (url, options) => net.fetch(url, options), checkIdle: requireIdle });
 
 let win = null;
 let conversation;
@@ -322,11 +324,17 @@ ipcMain.handle("plugins:test", async (_event, id) => {
   }
 });
 
-ipcMain.handle("plugins:importProjectResume", () => {
+ipcMain.handle("marketplace:get", (_event, online) => online === true ? marketplace.refresh() : marketplace.snapshot());
+ipcMain.handle("marketplace:install", async (_event, id) => {
   try {
-    if (turnRunning) throw new Error("协作结束后可导入 Skill。");
-    const id = teamSkills.importFile(join(app.getAppPath(), repositorySkillPath), "接续项目,项目进度,下一步");
-    return { ok: true, id, skills: teamSkills.catalog() };
+    return { ok: true, market: await marketplace.install(id), skills: teamSkills.catalog() };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+ipcMain.handle("marketplace:theme", (_event, id) => {
+  try {
+    return { ok: true, market: marketplace.theme(id) };
   } catch (error) {
     return { ok: false, error: error.message };
   }

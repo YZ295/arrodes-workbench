@@ -8,11 +8,11 @@ Arrodes（谦卑之心）是 Windows 桌面 Agent 工作台。可以在选定的
 
 Arrodes 支持工作区文件、文档、表格、网页搜索与多 Agent 协作。Skill 为模型提供操作说明，工具调用仍受角色授权约束。使用云模型时，对话和部分工具读取内容可能发给配置的模型服务。
 
-### 插件仓库
+### 插件市场
 
-从左侧打开「插件仓库」。在「连接插件」中启用一个已安装在本机的 Agent，检测安装位置并测试连接。Codex 也可以手动填写 CLI 的绝对路径。测试成功后，在「多 Agent」中为当前工作区的角色选择执行器。
+从左侧打开「插件市场」。在「发现」页搜索并安装技能或主题，在「已安装」页查看已添加的功能。社区目录由 GitHub 维护。「Agent 预设」提供 Codex 等本地 Agent 的检测、连接和角色绑定。
 
-在「技能」中可直接导入[接续项目](arrodes/agent/skills/project-resume/SKILL.md)，或粘贴公开 GitHub 仓库、目录或 `SKILL.md` 地址。导入后可在角色的 Skill 设置中启用。连接插件随桌面应用提供，用户用自己的 Agent 安装和登录。详见[连接配置与社区投稿说明](docs/plugin-repository.md)。
+也可在发现页粘贴公开 GitHub 仓库、目录或 `SKILL.md` 地址。安装的技能可在角色的 Skill 设置中启用。详见[连接配置与社区投稿说明](docs/plugin-repository.md)。
 
 ## 从源码运行
 

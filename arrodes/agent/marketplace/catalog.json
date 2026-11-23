@@ -1,0 +1,21 @@
+[
+  {
+    "id": "project-resume", "kind": "skill", "category": "项目管理", "name": "接续项目",
+    "description": "读取工作区进度，列出已完成事项、阻塞和下一步。", "author": "Arrodes", "version": "1.0.0",
+    "source": "https://github.com/YZ295/arrodes-workbench/blob/codex/plugin-repository/arrodes/agent/skills/project-resume/SKILL.md"
+  },
+  {
+    "id": "source-notes", "kind": "skill", "category": "资料与写作", "name": "带出处的资料摘要",
+    "description": "把多份本地资料整理成可回查的摘要，逐条标注页码、段落或行号。", "author": "Arrodes", "version": "1.0.0",
+    "source": "https://github.com/YZ295/arrodes-workbench/blob/codex/plugin-repository/arrodes/agent/skills/source-notes/SKILL.md"
+  },
+  {
+    "id": "delivery-check", "kind": "skill", "category": "工具与能力", "name": "交付检查清单",
+    "description": "按验收标准复查文档和表格，把结论标为通过、未通过或无法验证。", "author": "Arrodes", "version": "1.0.0", "distribution": "remote",
+    "source": "https://github.com/YZ295/arrodes-workbench/blob/codex/plugin-repository/arrodes/agent/skills/delivery-check/SKILL.md"
+  },
+  {
+    "id": "night", "kind": "theme", "category": "主题", "name": "夜读",
+    "description": "以墨蓝背景和浅色文字显示 Arrodes，可在已安装中切回默认主题。", "author": "Arrodes", "version": "1.0.0"
+  }
+]

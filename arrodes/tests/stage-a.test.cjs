@@ -281,15 +281,28 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
 
   try {
     const { page, data } = await launch();
-    await page.getByRole('button', { name: '插件仓库', exact: true }).click({ timeout: 3000 });
-    await page.getByRole('heading', { name: '连接插件', exact: true }).waitFor();
-    await page.getByRole('heading', { name: '技能', exact: true }).waitFor();
+    await page.getByRole('button', { name: '插件市场', exact: true }).click({ timeout: 3000 });
+    await page.getByRole('searchbox', { name: '搜索插件' }).fill('接续项目');
+    const projectSkill = page.getByRole('article', { name: '接续项目' });
+    await projectSkill.getByRole('button', { name: '安装', exact: true }).click();
+    await page.getByRole('button', { name: '已安装', exact: true }).click();
+    await projectSkill.getByText('已安装', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '发现', exact: true }).click();
+    await page.getByRole('searchbox', { name: '搜索插件' }).fill('');
+    await page.getByRole('button', { name: '主题', exact: true }).click();
+    const theme = page.getByRole('article', { name: '夜读' });
+    await theme.getByRole('button', { name: '安装', exact: true }).click();
+    await theme.getByRole('button', { name: '应用', exact: true }).click();
+    await page.waitForFunction(() => document.documentElement.dataset.marketTheme === 'night');
+    const installedMarket = JSON.parse(await readFile(join(data, 'marketplace.json'), 'utf8'));
+    assert.equal(installedMarket.theme, 'night');
+    await theme.getByRole('button', { name: '恢复默认主题', exact: true }).click();
+    await page.waitForFunction(() => !document.documentElement.dataset.marketTheme);
+    await page.getByRole('button', { name: 'Agent 预设', exact: true }).click();
     const codexPlugin = page.getByRole('article', { name: 'Codex' });
     await codexPlugin.getByRole('button', { name: '启用' }).click();
     await codexPlugin.getByRole('button', { name: '测试连接' }).waitFor();
     assert.equal(JSON.parse(await readFile(join(data, 'connection-plugins.json'), 'utf8')).codex.enabled, true);
-    await page.getByRole('button', { name: '导入接续项目' }).click();
-    await page.getByText('已导入，可在角色的 Skill 设置中启用。', { exact: true }).waitFor();
     const imported = JSON.parse(await readFile(join(data, 'team-skills.json'), 'utf8'));
     assert.equal(imported[0].name, '接续项目');
     await page.getByRole('button', { name: '返回对话', exact: true }).click();

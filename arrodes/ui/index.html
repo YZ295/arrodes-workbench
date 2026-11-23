@@ -29,6 +29,29 @@
     --warning: #875619;
     --canvas-grid: #cad3e1;
   }
+  html[data-market-theme="night"] {
+    color-scheme: dark;
+    --surface: #111b2e;
+    --sidebar: #152239;
+    --panel: #192840;
+    --ink: #edf3fc;
+    --text: #d7e2f2;
+    --muted: #aebfd6;
+    --line: #3a4e6a;
+    --hover: #243955;
+    --selection: #213e62;
+    --accent: #0064d2;
+    --accent-ink: #9ecbff;
+    --focus: #87baff;
+    --error: #ffb4b9;
+    --error-bg: #43252e;
+    --error-line: #82515f;
+    --overlay: #000a;
+    --shadow: #0005;
+    --success: #9cdebd;
+    --warning: #f3cf9b;
+    --canvas-grid: #3b4e68;
+  }
   html, body { height: 100%; }
   body { display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif; background: var(--surface); color: var(--ink); }
   #root { display: flex; flex: 1; flex-direction: column; min-height: 0; }
@@ -73,9 +96,23 @@
   .avatar { display: grid; flex: 0 0 27px; place-items: center; width: 27px; height: 27px; border-radius: 50%; background: var(--selection); color: var(--accent-ink); font-size: 12px; }
   .team-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   .team-header h1 { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
-  .repository { overflow: auto; padding: 20px; }
+  .repository { overflow: auto; padding: 18px 20px 26px; }
   .repository h2 { font-size: 15px; margin: 0 0 10px; }
-  .repository section + section { margin-top: 24px; }
+  .market-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .market-tabs [aria-pressed="true"], .repository-actions [aria-pressed="true"] { background: var(--selection); color: var(--accent-ink); border-color: var(--accent-ink); }
+  .repository input[type="search"] { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin-bottom: 10px; background: var(--panel); color: var(--ink); font: inherit; }
+  .market-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 10px; margin-top: 10px; }
+  .market-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow-wrap: anywhere; }
+  .market-card-heading, .market-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .market-card-heading h3 { font-size: 14px; }
+  .market-card .tool { flex-shrink: 0; }
+  .market-card > p { font-size: 13px; line-height: 1.55; color: var(--text); }
+  .market-card .hint { font-size: 12px; color: var(--muted); }
+  .market-card-footer { margin-top: auto; }
+  .market-installed { color: var(--success); font-size: 12px; white-space: nowrap; }
+  .market-import { margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .market-import summary { cursor: pointer; font-size: 13px; color: var(--accent-ink); }
+  .repository [role="status"]:empty { display: none; }
   .repository-list { display: grid; border: 1px solid var(--line); border-radius: 8px; }
   .repository-entry { display: grid; gap: 8px; padding: 12px; min-width: 0; }
   .repository-entry + .repository-entry { border-top: 1px solid var(--line); }
@@ -271,7 +308,7 @@ function build() {
   const container = el("main", { class: "chat-pane" });
   const frame = el("div", { class: "app-frame" }, sidebar(), container);
   if (state.view === "plugins") {
-    container.append(el("header", { class: "team-header" }, el("h1", {}, "插件仓库"),
+    container.append(el("header", { class: "team-header" }, el("h1", {}, "插件市场"),
       el("button", { class: "tool", type: "button", onclick: returnToChat }, "返回对话")));
     container.append(pluginRepository());
     return frame;
@@ -562,7 +599,7 @@ function sidebar() {
         "aria-current": String(state.view === "plugins"), onclick: () => {
           state.view = "plugins";
           render();
-        } }, icon("folder"), el("span", {}, "插件仓库")),
+        } }, icon("folder"), el("span", {}, "插件市场")),
       el("section", { "aria-labelledby": "sessions-label" },
         el("header", {}, el("h2", { id: "sessions-label" }, "会话"),
           addButton("新建会话", "新建会话", () => startConversation(state.workspace)),
@@ -1073,7 +1110,9 @@ document.addEventListener("click", (event) => {
 Promise.all([
   window.arrodes.getConfig(), window.arrodes.getConversation(),
   window.arrodes.listWorkspaces(), window.arrodes.listConversations(),
-]).then(([config, conversation, workspaces, sessions]) => {
+  window.arrodes.getMarketplace(false).catch(() => null),
+]).then(([config, conversation, workspaces, sessions, market]) => {
+  applyMarketTheme(market?.theme);
   state.configured = config.configured;
   state.workspaces = workspaces;
   state.sessions = sessions;

@@ -1,5 +1,14 @@
 function pluginRepository() {
   const app = window.arrodes;
+  const marketStatus = el("p", { class: "hint", role: "status" });
+  const grid = el("div", { class: "market-grid" });
+  const search = el("input", { type: "search", "aria-label": "搜索插件", placeholder: "搜索插件、作者或用途" });
+  const filters = el("div", { class: "repository-actions", "aria-label": "按分类筛选" });
+  const content = el("div");
+  let market;
+  let syncing = false;
+  let page = "发现";
+  let category = "全部";
   const list = el("div", { class: "repository-list" });
   const feedback = el("p", { class: "hint", role: "status" }, "正在检测本机 Agent…");
 
@@ -77,12 +86,6 @@ function pluginRepository() {
     }
   }
 
-  const skillStatus = el("p", { class: "hint", role: "status" });
-  const install = control("导入接续项目", async () => {
-    const result = await action(install, skillStatus, "正在导入…",
-      () => app.importProjectResume(), "已导入，可在角色的 Skill 设置中启用。");
-    if (result?.ok) teamCanvas.refreshSkills(result.skills);
-  });
   const url = el("input", { type: "url", placeholder: "公开 GitHub 仓库或 SKILL.md 地址" });
   const choices = el("div");
   const githubStatus = el("p", { class: "hint", role: "status" });
@@ -103,17 +106,97 @@ function pluginRepository() {
     }
   });
   url.oninput = () => choices.replaceChildren();
-  void reload();
-  return el("div", { class: "repository" },
-    el("section", { "aria-labelledby": "connection-plugins-heading" },
-      el("h2", { id: "connection-plugins-heading" }, "连接插件"),
-      control("重新检测", reload), feedback, list),
-    el("section", { "aria-labelledby": "repository-skills-heading" },
-      el("h2", { id: "repository-skills-heading" }, "技能"),
-      el("div", { class: "repository-list" },
-        el("article", { class: "repository-entry" }, el("h3", {}, "接续项目"),
-          el("p", { class: "hint" }, "读取工作区进度记录，找出阻塞和下一步。"),
-          el("div", { class: "repository-actions" }, install), skillStatus),
-        el("article", { class: "repository-entry" }, el("h3", {}, "GitHub 技能"),
-          field("GitHub 地址", url), choices, el("div", { class: "repository-actions" }, importGithub), githubStatus))));
+
+  function update(next) {
+    market = next;
+    applyMarketTheme(next.theme);
+    drawEntries();
+  }
+
+  function marketCard(entry) {
+    const installed = Object.hasOwn(market.installed, entry.id);
+    const isTheme = entry.kind === "theme";
+    const status = el("p", { class: "hint", role: "status" });
+    const install = control("安装", async () => {
+      const result = await action(install, status, "正在安装…",
+        () => app.installMarketPlugin(entry.id), "已安装。");
+      if (result?.ok) {
+        teamCanvas.refreshSkills(result.skills);
+        update(result.market);
+      }
+    });
+    const active = market.theme === entry.id;
+    const apply = control(active ? "恢复默认主题" : "应用", async () => {
+      const result = await action(apply, status, "正在切换…", () => app.setMarketTheme(active ? null : entry.id), "主题已切换。");
+      if (result?.ok) update(result.market);
+    });
+    return el("article", { class: "market-card", "aria-label": entry.name },
+      el("div", { class: "market-card-heading" }, el("h3", {}, entry.name),
+        installed ? el("span", { class: "market-installed" }, "已安装") : install),
+      el("p", { class: "hint" }, `${entry.author} · v${entry.version}`),
+      el("p", {}, entry.description),
+      el("div", { class: "market-card-footer" },
+        el("span", { class: "hint" }, `${isTheme ? "主题" : "Skill"} · ${entry.category}`),
+        ...(installed && isTheme ? [apply] : [])),
+      status);
+  }
+
+  function drawEntries() {
+    if (!market) return;
+    const options = [...new Set(["全部", "技能", ...market.catalog.map(({ category }) => category)])];
+    const categoryButtons = options.map((name) => {
+      const button = control(name, () => { category = name; drawEntries(); filters.querySelector("[aria-pressed=true]")?.focus(); });
+      button.setAttribute("aria-pressed", String(name === category));
+      return button;
+    });
+    filters.replaceChildren(...categoryButtons);
+    const query = search.value.trim().toLocaleLowerCase();
+    const entries = (page === "已安装" ? Object.values(market.installed) : market.catalog).filter((entry) =>
+      (page === "已安装" || category === "全部" || category === entry.category || category === "技能" && entry.kind === "skill") &&
+      [entry.name, entry.description, entry.author, entry.category].some((value) => value.toLocaleLowerCase().includes(query)));
+    grid.replaceChildren(...(entries.length ? entries.map(marketCard) : [
+      el("p", { class: "hint" }, query || page === "发现" ? "没有匹配的插件。" : "还未安装插件，可从「发现」页添加。"),
+    ]));
+    marketStatus.textContent = page === "发现" ? syncing ? "正在更新社区目录…" : market.source : "";
+  }
+  search.oninput = drawEntries;
+
+  const importPanel = el("details", { class: "market-import" }, el("summary", {}, "从 GitHub 地址导入"),
+    el("article", { class: "repository-entry" }, field("GitHub 地址", url), choices,
+      el("div", { class: "repository-actions" }, importGithub), githubStatus));
+  const presetPanel = el("section", { "aria-labelledby": "connection-plugins-heading" },
+    el("h2", { id: "connection-plugins-heading" }, "连接插件"), control("重新检测", reload), feedback, list);
+
+  const tabs = el("div", { class: "market-tabs", "aria-label": "插件市场视图" });
+  const views = ["发现", "已安装", "Agent 预设"].map((name) => {
+    const button = control(name, () => {
+      page = name;
+      for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === button));
+      if (page === "Agent 预设") {
+        content.replaceChildren(presetPanel);
+        void reload();
+      } else {
+        content.replaceChildren(search, ...(page === "发现" ? [filters, marketStatus] : []),
+          grid, ...(page === "发现" ? [importPanel] : []));
+        drawEntries();
+      }
+    });
+    return button;
+  });
+  tabs.append(...views);
+  views[0].click();
+  marketStatus.textContent = "正在读取插件目录…";
+  void app.getMarketplace(false).then(update).then(async () => {
+    syncing = true;
+    drawEntries();
+    const next = await app.getMarketplace(true);
+    syncing = false;
+    update({ ...market, catalog: next.catalog, source: next.source });
+  }).catch(() => { marketStatus.textContent = "无法读取插件目录，请重新打开插件市场。"; });
+  return el("div", { class: "repository" }, tabs, content);
+}
+
+function applyMarketTheme(theme) {
+  if (theme) document.documentElement.dataset.marketTheme = theme;
+  else delete document.documentElement.dataset.marketTheme;
 }
