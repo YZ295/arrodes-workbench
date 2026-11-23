@@ -154,7 +154,11 @@ function executeTool(name, args, workspaceDir) {
 
 export const APP_CAPABILITY_BOUNDARIES = "应用能力与对话权限：多 Agent 可协调已配置的角色。对话不能创建或修改角色、安装或分配 Skill、改画布连线；这些操作由用户在界面完成。问「你能不能直接做」时，先用第一人称说明你是否有执行权限。回答其他能力问题时，以本轮实际提供的工具为准。";
 
+import { projectRules, projectWorkflow } from "./project-standards.mjs";
+
 const SYSTEM = `你是「谦卑之心」，一个 Windows 桌面 Agent。用户在对话框里说话，你可以使用工作区工具完成实际任务。
+
+${projectRules}
 
 ${APP_CAPABILITY_BOUNDARIES}
 
@@ -263,8 +267,9 @@ export async function runAgentTurn({ text, history, workspaceDir, config, onProg
   }
   const activeTools = collaboration?.onAssist ? [...tools, ASSIST_TOOL] : tools;
   const role = collaboration ? `协作阶段：${collaboration.stage}\n${collaboration.instructions}\n` : "";
+  const workflow = projectWorkflow(text);
   const messages = [
-    { role: "system", content: `${role}${SYSTEM}${instructions}${creator ? "\n创造模式：当前工作区是 Arrodes 源码副本。先读取并定位相关代码，逐文件提出小改动，由应用按当前批准权限处理差异后写入。用 check_syntax 验证 JavaScript，并报告需手动运行的测试和构建步骤。" : ""}\n${describeTurnTools(activeTools)}\n当前工作区目录：${workspaceDir}` },
+    { role: "system", content: `${role}${SYSTEM}${instructions}\n${workflow}${creator ? "\n创造模式：当前工作区是 Arrodes 源码副本。先读取并定位相关代码，逐文件提出小改动，由应用按当前批准权限处理差异后写入。用 check_syntax 验证 JavaScript，并报告需手动运行的测试和构建步骤。" : ""}\n${describeTurnTools(activeTools)}\n当前工作区目录：${workspaceDir}` },
     ...history.map((item) => ({ role: item.role, content: item.content })),
     { role: "user", content: text },
   ];

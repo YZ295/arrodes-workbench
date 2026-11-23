@@ -14,6 +14,8 @@ try {
   }
   await buildRuntime(join(temporary, "agent/collab-runtime.mjs"));
   const manifestPath = join(temporary, "package.json");
+  cpSync(join(repository, "CLAUDE.md"), join(temporary, "agent", "CLAUDE.md"));
+  cpSync(join(repository, ".agents", "skills"), join(temporary, "agent", "project-skills"), { recursive: true });
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const rootManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
   writeFileSync(manifestPath, JSON.stringify({ ...manifest, dependencies: rootManifest.dependencies }, null, 2));

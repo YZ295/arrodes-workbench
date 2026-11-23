@@ -57,6 +57,8 @@ function createTeamCanvas(updateSendButton) {
   let handoffs = [];
   let helping = new Set();
   const positions = () => (saved ?? starter).nodes;
+  const roleExecutors = () => saved?.roleExecutors ?? (saved?.coordinatorExecutor ? { coordinator: saved.coordinatorExecutor } : {});
+  const executorFor = (role) => roleExecutors()[role.id] ?? role.executor ?? "builtin";
   const name = (id) => roles.find((role) => role.id === id)?.name ?? id;
   const editable = () => !busy && !loading && !saving;
 
@@ -126,7 +128,9 @@ function createTeamCanvas(updateSendButton) {
     updateSendButton();
     error.textContent = "";
     try {
-      const result = await window.arrodes.saveCanvas(id, graph);
+      const result = await window.arrodes.saveCanvas(id, {
+        roleExecutors: roleExecutors(), roleSettings: saved?.roleSettings ?? {}, ...graph,
+      });
       if (id !== workspaceId) return false;
       if (!result.ok) { error.textContent = result.error; return false; }
       saved = result.graph;
@@ -384,6 +388,68 @@ function createTeamCanvas(updateSendButton) {
     dialog.showModal();
   }
 
+  async function showExecutor(role, onSaved) {
+    if (!editable()) return;
+    const workspace = workspaceId;
+    const optionsForWorkspace = await window.arrodes.getTeamExecutors().catch(() => executors);
+    if (workspace !== workspaceId || !editable() || document.getElementById("role-executor-title")) return;
+    executors = optionsForWorkspace;
+    const selected = executorFor(role);
+    const candidates = executors.map((option) =>
+      role.access === "write" && option.supportsWrite === false
+        ? { ...option, available: false, reason: "仅支持只读" } : option);
+    const options = candidates.map(({ id, name, available, reason }) =>
+      el("option", { value: id, ...(available ? {} : { disabled: "" }) },
+        available ? name : `${name}（${reason ?? "待接入"}）`));
+    const select = el("select", { id: "role-executor-choice", "aria-label": "执行器" }, ...options);
+    select.value = selected;
+    const current = saved?.roleSettings?.[role.id] ?? {};
+    const model = el("input", { value: current.modelId ?? "", placeholder: "沿用执行器默认模型", maxlength: "150" });
+    const instructions = el("textarea", { rows: "4", maxlength: "6000", placeholder: "填写职责补充、验收标准或运维要求" });
+    instructions.value = current.instructions ?? "";
+    const memory = el("input", { type: "checkbox" });
+    memory.checked = current.memory === "persistent";
+    const memoryField = el("label", { class: "role-access" }, memory, "延续这个角色的原生会话");
+    const memoryHint = el("p", { class: "hint" }, "每个角色独立延续历史对话；工具、Skill 和记忆遵循该 Agent 自己的配置。");
+    const details = el("p", { class: "hint" }, "设置按当前工作区和角色保存。");
+    const message = el("p", { class: "error-text", role: "alert" });
+    const saveButton = button("保存", async () => {
+      select.disabled = saveButton.disabled = true;
+      const ok = await save({
+        nodes: positions(), edges: saved?.edges ?? [], configured: saved?.configured ?? false,
+        roleExecutors: { ...roleExecutors(), [role.id]: select.value },
+        roleSettings: { ...(saved?.roleSettings ?? {}), [role.id]: {
+          instructions: instructions.value, modelId: model.value, memory: candidates.find(({id})=>id===select.value)?.supportsSession && memory.checked ? "persistent" : "ephemeral",
+        } },
+      });
+      if (ok) { dialog.close(); onSaved?.(); }
+      else {
+        message.textContent = error.textContent || "无法保存执行器，请重试。";
+        select.disabled = false;
+        saveButton.disabled = !candidates.some(({ id, available }) => id === select.value && available);
+      }
+    }, "保存", { class: "primary" });
+    select.onchange = () => {
+      const option = candidates.find(({ id }) => id === select.value);
+      saveButton.disabled = !option?.available;
+      memory.disabled = !option?.supportsSession;
+      memoryHint.hidden = !option?.supportsSession;
+      model.placeholder = select.value === "builtin" ? "沿用 Arrodes 默认模型" : select.value === "dsh" ? "留空沿用 DSH；覆盖格式 provider/model" : "留空使用该 Agent 自己配置的模型";
+      model.disabled = !option?.supportsModel;
+      if (model.disabled) model.value = "";
+      details.textContent = option?.detail ?? "";
+    };
+    select.onchange();
+    const dialog = el("dialog", { class: "dialog role-dialog", "aria-labelledby": "role-executor-title" },
+      el("h2", { id: "role-executor-title" }, `${role.name} · 执行器`),
+      field("执行器", select), field("模型（可选）", model), field("角色指令", instructions), memoryField, memoryHint,
+      details, message,
+      el("div", { class: "actions" }, button("取消", () => dialog.close()), saveButton));
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
   function draw() {
     const focus = document.activeElement?.getAttribute("data-canvas-focus");
     const lock = !editable();
@@ -417,8 +483,17 @@ function createTeamCanvas(updateSendButton) {
         skill.disabled = lock;
         head.append(skill);
       }
-      const node = el("article", { class: `canvas-node ${status.key}`, "data-agent": id },
-        head, el("div", { class: "canvas-node-footer" }, el("span", {}, status.label)));
+      const footer = el("div", { class: "canvas-node-footer" }, el("span", {}, status.label));
+      if (!temporary && role) {
+        const executor = executorFor(role);
+        const label = executor === "builtin" ? "内置" : executors.find((option) => option.id === executor)?.name ?? executor;
+        const choice = button(label, () => showExecutor(role), `配置${name(id)} 的执行器`, {
+          class: "canvas-skill-button canvas-executor-button", title: `执行器：${label}`, "data-canvas-focus": `executor-${id}`,
+        });
+        choice.disabled = lock;
+        footer.append(choice);
+      }
+      const node = el("article", { class: `canvas-node ${status.key}`, "data-agent": id }, head, footer);
       if (status.tasks.length) node.title = status.tasks.map(({ title }) => title).filter(Boolean).join("\n");
       place(node, point);
       moveNode(handle, node, point);
@@ -542,8 +617,12 @@ function createTeamCanvas(updateSendButton) {
   return {
     skillPicker,
     root,
+    showExecutor,
+    executorFor,
     get pending() { return saving || loading; },
     refreshRoles(catalog) { roles = catalog; draw(); },
+    refreshExecutors(catalog) { executors = catalog; draw(); },
+    refreshSkills(catalog) { skills = catalog; draw(); },
     receive,
     sync(workspace, conversation, history, running, liveEvents) {
       const busyChanged = busy !== running;
@@ -564,13 +643,15 @@ function createTeamCanvas(updateSendButton) {
         saved = null;
         roles = [];
         skills = [];
+        executors = [];
         saving = false;
         loading = true;
-        window.arrodes.getCanvas(workspace).then(({ graph, roles: catalog, skills: library }) => {
+        window.arrodes.getCanvas(workspace).then(({ graph, roles: catalog, skills: library, executors: options }) => {
           if (workspace !== workspaceId) return;
           saved = graph;
           roles = catalog;
           skills = library;
+          executors = options;
         }).catch(() => {
           if (workspace === workspaceId) error.textContent = "无法读取画布，请切换工作区后重试。";
         }).finally(() => {

@@ -1,11 +1,37 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { allowsRoleAccess, executorLabel, supportedExecutors } from "./external-executors.mjs";
 import { validateSkillIds } from "./team-skills.mjs";
 
 const required = ["coordinator", "reviewer"];
 
 export function validateCanvas(input, roles, skills = []) {
+  const legacy = input?.coordinatorExecutor;
+  const executors = input?.roleExecutors ?? (legacy ? { coordinator: legacy } : {});
+  const knownRoles = new Map(roles.map((role) => [role.id, role]));
+  if (typeof executors !== "object" || Array.isArray(executors) ||
+      Object.entries(executors).some(([id, executor]) => !knownRoles.has(id) || !supportedExecutors.includes(executor))) {
+    throw new Error("角色执行器配置无效。");
+  }
+  for (const [id, executor] of Object.entries(executors)) {
+    if (!allowsRoleAccess(executor, knownRoles.get(id).access)) throw new Error(`${executorLabel(executor)} 当前仅支持只读角色。`);
+  }
+  const roleSettings = {};
+  if (input.roleSettings !== undefined && (!input.roleSettings || typeof input.roleSettings !== "object" || Array.isArray(input.roleSettings))) {
+    throw new Error("角色设置格式无效。");
+  }
+  for (const [id, settings] of Object.entries(input.roleSettings ?? {})) {
+    if (!knownRoles.has(id) || !settings || typeof settings !== "object" ||
+      typeof (settings.instructions ?? "") !== "string" || (settings.instructions ?? "").length > 6000 ||
+      typeof (settings.modelId ?? "") !== "string" || (settings.modelId ?? "").length > 150 ||
+      !["ephemeral", "persistent"].includes(settings.memory ?? "ephemeral")) throw new Error("角色设置无效。");
+    const executor = executors[id] ?? knownRoles.get(id).executor ?? "builtin";
+    if (settings.memory === "persistent" && executor === "builtin") throw new Error("内置角色不使用外部 Agent 的原生会话。");
+    roleSettings[id] = { instructions: (settings.instructions ?? "").trim(),
+      modelId: (settings.modelId ?? "").trim(), memory: settings.memory ?? "ephemeral" };
+  }
+  const roleExecutors = Object.fromEntries(Object.entries(executors));
   const workers = new Set(roles.filter(({ access }) => access).map(({ id }) => id));
   const available = new Map(skills.map((skill) => [skill.id, skill]));
   if (!Array.isArray(input?.nodes) || !Array.isArray(input.edges) ||
@@ -46,7 +72,9 @@ export function validateCanvas(input, roles, skills = []) {
   }
   for (const id of ids) check(id);
   if (edges.length && input.configured !== true) throw new Error("带连线的画布必须启用画布分工。");
-  return { nodes, edges, configured: input.configured === true };
+  return { nodes, edges, configured: input.configured === true,
+    ...(Object.keys(roleExecutors).length ? { roleExecutors } : {}),
+    ...(Object.keys(roleSettings).length ? { roleSettings } : {}) };
 }
 
 export function createTeamCanvasStore(dataDir) {

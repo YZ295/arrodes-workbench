@@ -17,6 +17,7 @@ const spreadsheetTask = '生成一份验收用 Excel 表格';
 const task = '在工作区新建 math.js，实现 add(a,b) 并检查语法';
 const fileText = 'function add(a, b) { return a + b; }\n';
 const questions = ['你好', '你的工作区在哪里', '帮我看看这个', '先不做了'];
+const modelGreeting = '你好，我是测试模型。';
 const teamGoal = '让团队创建 team.js 并验收';
 const brokenTeamGoal = '让团队创建有语法错误的 broken.js 并验收';
 const rolesQuestion = '查看当前可用的角色';
@@ -240,7 +241,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
       } else {
         if (latest === task) assert.ok(results.every((entry) => JSON.parse(entry.content).ok));
         const answers = new Map([
-          ['你好', '你好！'],
+          ['你好', modelGreeting],
           ['你的工作区在哪里', messages[0].content.split('当前工作区目录：').at(-1)],
           ['帮我看看这个', '## 先确认\n\n你想让我重点看什么？\n\n- **范围**\n- `math.js`\n\n<img src=x onerror=alert(1)>'],
           ['先不做了', '好，先停在这里。'],
@@ -280,6 +281,18 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
 
   try {
     const { page, data } = await launch();
+    await page.getByRole('button', { name: '插件仓库', exact: true }).click({ timeout: 3000 });
+    await page.getByRole('heading', { name: '连接插件', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '技能', exact: true }).waitFor();
+    const codexPlugin = page.getByRole('article', { name: 'Codex' });
+    await codexPlugin.getByRole('button', { name: '启用' }).click();
+    await codexPlugin.getByRole('button', { name: '测试连接' }).waitFor();
+    assert.equal(JSON.parse(await readFile(join(data, 'connection-plugins.json'), 'utf8')).codex.enabled, true);
+    await page.getByRole('button', { name: '导入接续项目' }).click();
+    await page.getByText('已导入，可在角色的 Skill 设置中启用。', { exact: true }).waitFor();
+    const imported = JSON.parse(await readFile(join(data, 'team-skills.json'), 'utf8'));
+    assert.equal(imported[0].name, '接续项目');
+    await page.getByRole('button', { name: '返回对话', exact: true }).click();
     await page.getByRole('heading', { name: '今天想做什么？' }).waitFor({ timeout: 5000 });
     assert.equal(await page.title(), '谦卑之心');
     const windowChrome = await page.evaluate(() => {
@@ -365,17 +378,17 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await page.getByLabel('工作区名称').fill(workspaceName);
     await page.getByRole('button', { name: '创建', exact: true }).click();
     const workspace = join(data, 'workspaces', workspaceName);
-    const answers = ['你好！', workspace, '你想让我重点看什么？', '好，先停在这里。'];
+    const answers = [modelGreeting, workspace, '你想让我重点看什么？', '好，先停在这里。'];
     for (let i = 0; i < questions.length; i++) await send(page, questions[i], answers[i]);
     const formatted = page.locator('.bubble.assistant').filter({ hasText: '你想让我重点看什么？' });
     assert.equal(await formatted.getByRole('heading', { name: '先确认' }).count(), 1);
     assert.equal(await formatted.locator('li strong').innerText(), '范围');
     assert.equal(await formatted.locator('li code').innerText(), 'math.js');
     assert.equal(await formatted.locator('img').count(), 0);
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, questions.length);
     assert.ok(requests.every((messages) => !messages.some(({ role }) => role === 'tool')));
     assert.deepEqual(await readdir(workspace), []);
-    assert.ok(requests[0].some(({ role, content }) => role === 'assistant' && content === '你好！'));
+    assert.ok(requests[1].some(({ role, content }) => role === 'assistant' && content === modelGreeting));
     console.log('3–6 问候、工作区问答、澄清、停止均未运行工具');
 
     await send(page, task, '已创建 math.js，语法检查通过。');
@@ -574,7 +587,7 @@ test('桌面首屏、零工具问答、真实文件和重启恢复', { timeout: 
     await creator.getByLabel('角色名称').fill('资料搭档');
     await creator.getByLabel('职责').fill('为执行 Agent 准备任务资料。');
     await creator.getByText('Skill（可选）', { exact: true }).click({ timeout: 3000 });
-    await creator.getByLabel(/适用场景/).fill('准备资料，材料整理');
+    await creator.getByRole('textbox', { name: /适用场景/ }).fill('准备资料，材料整理');
     await creator.getByRole('textbox', { name: 'GitHub 地址' }).fill('https://github.com/example/skills');
     await creator.getByRole('button', { name: '导入 GitHub' }).click();
     await creator.getByLabel('选择 Skill').selectOption({ label: 'prepare/SKILL.md' });

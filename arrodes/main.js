@@ -12,6 +12,8 @@ import { DEEPSEEK_API, DEEPSEEK_FLASH, deepSeekModelId } from "./agent/deepseek.
 import { listAvailableModels, resolveModelConnection, testModelConnection } from "./agent/model-connection.mjs";
 import { getTeamRoles, runTeamTurn } from "./agent/team.mjs";
 import { createTeamRoleStore } from "./agent/team-roles.mjs";
+import { teamExecutorOptions, testExecutorConnection, useConnectionPlugins } from "./agent/external-executors.mjs";
+import { createConnectionPluginStore } from "./agent/connection-plugins.mjs";
 import { createTeamCanvasStore } from "./agent/team-canvas.mjs";
 import { createTeamSkillStore, validateSkillIds, selectSkills, skillInstructions, BASIC_AGENT_SKILLS } from "./agent/team-skills.mjs";
 import { fetchGithubSkill } from "./agent/github-skills.mjs";
@@ -34,11 +36,15 @@ const teamRoles = createTeamRoleStore(DATA_DIR);
 const teamCanvases = createTeamCanvasStore(DATA_DIR);
 const teamSkills = createTeamSkillStore(DATA_DIR);
 const mcpTools = createMcpToolStore(DATA_DIR);
+const connectionPlugins = createConnectionPluginStore(DATA_DIR);
+useConnectionPlugins(connectionPlugins.list);
+const repositorySkillPath = "agent/skills/project-resume/SKILL.md";
 
 let win = null;
 let conversation;
 let turnRunning = false;
 let selectedParent = null;
+let testingExecutor = false;
 
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) return null;
@@ -209,7 +215,10 @@ ipcMain.handle("mcp:setGrants", (_event, roleId, ids) => {
 
 ipcMain.handle("canvas:get", (_event, workspaceId) => {
   if (!workspaces.get(workspaceId)) throw new Error("找不到工作区。");
-  return { graph: teamCanvases.get(workspaceId), roles: getTeamRoles(teamRoles.list()), skills: teamSkills.catalog() };
+  return {
+    graph: teamCanvases.get(workspaceId), roles: getTeamRoles(teamRoles.list()), skills: teamSkills.catalog(),
+    executors: teamExecutorOptions(),
+  };
 });
 
 ipcMain.handle("canvas:save", (_event, workspaceId, graph) => {
@@ -270,6 +279,56 @@ ipcMain.handle("canvas:artifact", async (_event, workspaceId, ref, reveal) => {
     return { ok: true };
   } catch {
     return { ok: false, error: "无法读取该交接文件。文件可能已移走，或不在工作区内。" };
+  }
+});
+
+ipcMain.handle("chat:executors", () => teamExecutorOptions());
+
+function repositoryExecutor(id) {
+  const plugin = teamExecutorOptions().find((entry) => entry.id === id && id !== "builtin");
+  if (!plugin) throw new Error("找不到这个连接插件。");
+  return plugin;
+}
+
+ipcMain.handle("plugins:save", (_event, id, settings) => {
+  try {
+    if (testingExecutor || turnRunning) throw new Error("请等待当前任务结束。");
+    repositoryExecutor(id);
+    const previous = connectionPlugins.list()[id];
+    const verifiedAt = previous?.enabled && settings.enabled && previous.executable === settings.executable
+      ? previous.verifiedAt : null;
+    connectionPlugins.save(id, { enabled: settings.enabled, executable: settings.executable, verifiedAt });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("plugins:test", async (_event, id) => {
+  if (testingExecutor || turnRunning) return { ok: false, error: "请等待当前任务结束。" };
+  testingExecutor = true;
+  try {
+    const plugin = repositoryExecutor(id);
+    if (!plugin.enabled || !plugin.detected) throw new Error("请先启用插件，并确认本机 Agent 的安装或配置。");
+    const settings = connectionPlugins.list()[id];
+    connectionPlugins.save(id, { ...settings, verifiedAt: null });
+    await testExecutorConnection(id);
+    connectionPlugins.save(id, { ...settings, verifiedAt: new Date().toISOString() });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    testingExecutor = false;
+  }
+});
+
+ipcMain.handle("plugins:importProjectResume", () => {
+  try {
+    if (turnRunning) throw new Error("协作结束后可导入 Skill。");
+    const id = teamSkills.importFile(join(app.getAppPath(), repositorySkillPath), "接续项目,项目进度,下一步");
+    return { ok: true, id, skills: teamSkills.catalog() };
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 });
 
@@ -356,7 +415,8 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
 
   const origin = conversation;
   const pending = origin.history.at(-1)?.clarification;
-  const greeting = !confirmation && /^(?:你好|您好|嗨|哈喽|早上好|下午好|晚上好|hi|hey|hello)[\s！!。,.，~～]*$/iu.test(input);
+  const greeting = (mode === "team" || mode === "creator") && !confirmation
+    && /^(?:你好|您好|嗨|哈喽|早上好|下午好|晚上好|hi|hey|hello)[\s！!。,.，~～]*$/iu.test(input);
   if (greeting) {
     const result = { kind: "reply", text: "你好！", clarification: pending };
     saveConversation({ ...origin, history: [
@@ -379,7 +439,11 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
     return result;
   }
   const config = loadConfig();
-  if (!config?.apiKey || config.apiKey === "(kept)") {
+  mode = confirmed?.mode ?? mode;
+  const teamCanvas = mode === "team" ? teamCanvases.get(origin.workspaceId) : null;
+  const nativeCoordinator = mode === "team" &&
+    (teamCanvas?.roleExecutors?.coordinator ?? teamCanvas?.coordinatorExecutor ?? "builtin") !== "builtin";
+  if ((!config?.apiKey || config.apiKey === "(kept)") && !nativeCoordinator) {
     return { kind: "need_config", text: "先连接模型：点左下角设置，填接口地址和 Key。" };
   }
   const taskText = confirmed?.text ?? input;
@@ -412,8 +476,9 @@ ipcMain.handle("chat:send", async ({ sender }, { text, mode, approvalMode, conve
         history: origin.history.filter(({ role }) => role !== "error").slice(-12),
         workspaceDir,
         config,
+        executorStateRoot: join(DATA_DIR, "executor-state"),
         customRoles: mode === "team" ? teamRoles.list() : [],
-        canvas: mode === "team" ? teamCanvases.get(origin.workspaceId) : null,
+        canvas: teamCanvas,
         skills: mode === "team" ? teamSkills.list() : [],
         clarifyFollowUp: mode === "team" ? clarifyFollowUp : null,
         mcpForRole: mode === "team" ? (roleId) => mcpTools.forRole(roleId) : undefined,

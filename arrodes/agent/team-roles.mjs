@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { allowsRoleAccess, executorLabel, supportedExecutors } from "./external-executors.mjs";
 
 function validRole(role) {
   return role && typeof role.name === "string" && role.name.trim() && role.name.length <= 40 &&
     !/[\u0000-\u001f]/.test(role.name) && typeof role.description === "string" &&
-    role.description.trim() && role.description.length <= 1200 && ["read", "write"].includes(role.access);
+    role.description.trim() && role.description.length <= 1200 && ["read", "write"].includes(role.access) &&
+    supportedExecutors.includes(role.executor ?? "builtin") && allowsRoleAccess(role.executor, role.access);
 }
 
 export function createTeamRoleStore(dataDir) {
@@ -31,8 +33,11 @@ export function createTeamRoleStore(dataDir) {
       name: typeof input?.name === "string" ? input.name.trim() : "",
       description: typeof input?.description === "string" ? input.description.trim() : "",
       access: input?.access,
+      executor: input?.executor ?? "builtin",
       skillIds,
     };
+    if (!supportedExecutors.includes(candidate.executor)) return { ok: false, error: "该执行器尚未接入。" };
+    if (!allowsRoleAccess(candidate.executor, candidate.access)) return { ok: false, error: `${executorLabel(candidate.executor)} 当前仅支持只读角色。` };
     if (!validRole(candidate)) return { ok: false, error: "请填写角色名称和职责，并选择工具权限。" };
     const saved = list();
     const nameKey = (name) => name.normalize("NFKC").toLowerCase();

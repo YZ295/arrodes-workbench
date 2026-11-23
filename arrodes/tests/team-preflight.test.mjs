@@ -704,3 +704,152 @@ test("重规划的临时角色与现有角色重名时返回分工错误并保�
   assert.match(result.text, /缺少退款合计/); // 首轮验收原因被保留
   assert.ok(fx.events.some(({ type }) => type === "plan")); // 首轮确实执行过分工
 });
+
+test("Codex 角色使用指定执行器并将结果交给验收", async (t) => {
+  const role = { id: "role-codex", name: "Codex 调研员", description: "只读核对材料", access: "read", executor: "codex" };
+  const planned = { action: "run", tasks: [
+    { ...task, role: role.id, goal: "核对退款依据", requiredAccess: "read", outputs: [] },
+  ] };
+  const fx = await fixture(t, planned, task.requiredInputs);
+  fx.fetchMock.mock.mockImplementation(async (_url, options) => {
+    const { messages } = JSON.parse(options.body);
+    const stage = messages[0].content.split("\n")[0];
+    if (stage === "协作阶段：规划") {
+      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(planned) } }] }) };
+    }
+    if (stage === "协作阶段：验收") {
+      assert.match(messages[1].content, /CODEX-RECEIPT/);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"passed":true,"reason":"已验收"}' } }] }) };
+    }
+    if (stage === "协作阶段：汇总") {
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "Codex 结果已验收。" } }] }) };
+    }
+    assert.fail(`意外调用内置执行器：${stage}`);
+  });
+  const externalRunner = t.mock.fn(async ({ assignment, requiredInputs, workspaceDir, profile }) => {
+    assert.equal(profile.executor, "codex");
+    assert.equal(workspaceDir, fx.workspaceDir);
+    assert.equal(assignment, planned.tasks[0].goal);
+    assert.deepEqual(requiredInputs, task.requiredInputs);
+    return { text: "CODEX-RECEIPT", outputs: [] };
+  });
+  const result = await fx.run({ customRoles: [role], externalRunner });
+  assert.equal(externalRunner.mock.callCount(), 1);
+  assert.equal(result.collaboration?.passed, true);
+  assert.ok(fx.events.some((event) => event.type === "task.handoff" && event.from === role.id));
+  assert.deepEqual((await readdir(fx.workspaceDir)).sort(), [...task.requiredInputs].sort());
+});
+
+test("Codex 协调者负责规划与汇总，执行和验收仍经编排器", async (t) => {
+  const planned = { action: "run", tasks: [
+    { ...task, role: "research", goal: "核对退款依据", requiredAccess: "read", outputs: [] },
+  ] };
+  const fx = await fixture(t, planned, task.requiredInputs);
+  const canvas = {
+    nodes: ["coordinator", "research", "reviewer"].map((id) => ({ id, x: .5, y: .5 })),
+    edges: [], configured: false, coordinatorExecutor: "codex",
+  };
+  const internalStages = [];
+  fx.fetchMock.mock.mockImplementation(async (_url, options) => {
+    const { messages } = JSON.parse(options.body);
+    const stage = messages[0].content.split("\n")[0];
+    internalStages.push(stage);
+    const content = stage === "协作阶段：验收"
+      ? '{"passed":true,"reason":"已核对内部执行结果"}' : "已核对工作区材料。";
+    return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+  });
+  const coordinatorRunner = t.mock.fn(async ({ stage, messages, workspaceDir }) => {
+    assert.equal(workspaceDir, fx.workspaceDir);
+    if (stage === "规划") {
+      assert.match(messages[0].content, /总协调者/);
+      return JSON.stringify(planned);
+    }
+    assert.equal(stage, "汇总");
+    assert.match(messages[1].content, /已核对工作区材料/);
+    return "Codex 已汇总验收结果。";
+  });
+  const result = await fx.run({ canvas, coordinatorRunner });
+  assert.deepEqual(coordinatorRunner.mock.calls.map(({ arguments: [input] }) => input.stage), ["规划", "汇总"]);
+  assert.deepEqual(internalStages, ["协作阶段：调研", "协作阶段：验收"]);
+  assert.equal(result.text, "Codex 已汇总验收结果。");
+  assert.ok(fx.events.some(({ type, from, to }) => type === "task.handoff" && from === "research" && to === "reviewer"));
+});
+
+test("Codex 协调者不可用时停止派发并显示原因", async (t) => {
+  const fx = await fixture(t, { action: "run", tasks: [task] }, task.requiredInputs);
+  const canvas = {
+    nodes: ["coordinator", "execute", "reviewer"].map((id) => ({ id, x: .5, y: .5 })),
+    edges: [], coordinatorExecutor: "codex",
+  };
+  const result = await fx.run({
+    canvas,
+    coordinatorRunner: async () => { throw new Error("Codex 离线"); },
+  });
+  assert.equal(result.kind, "error");
+  assert.match(result.text, /Codex 离线/);
+  assert.equal(fx.fetchMock.mock.callCount(), 0);
+  assert.deepEqual(fx.events, []);
+});
+
+test("画布可分别选择协调者、执行角色和验收者的执行器", async (t) => {
+  const fx = await fixture(t, {}, ["orders.csv"]);
+  const planned = { action: "run", tasks: [{
+    ...task, requiredInputs: ["orders.csv"], requiredAccess: "read", outputs: [], role: "research",
+  }] };
+  const canvas = {
+    nodes: ["coordinator", "research", "reviewer"].map((id) => ({ id, x: .5, y: .5 })),
+    edges: [], configured: false, roleExecutors: { coordinator: "dsh", research: "codex", reviewer: "codex" },
+  };
+  const roleCalls = [];
+  const coordinatorRunner = async ({ stage, executor }) => {
+    roleCalls.push([stage, executor]);
+    if (stage === "规划") return JSON.stringify(planned);
+    if (stage === "验收") return '{"passed":true,"reason":"核对通过"}';
+    return "已由选定协调者汇总。";
+  };
+  const externalRunner = async ({ profile }) => {
+    roleCalls.push([profile.id, profile.executor]);
+    return { text: "已核对源文件。", outputs: [] };
+  };
+  const result = await fx.run({ canvas, coordinatorRunner, externalRunner });
+  assert.deepEqual(roleCalls, [["规划", "dsh"], ["research", "codex"], ["验收", "codex"], ["汇总", "dsh"]]);
+  assert.equal(fx.fetchMock.mock.callCount(), 0);
+  assert.equal(result.collaboration.passed, true);
+});
+
+for (const executor of ["hermes", "openclaw"]) test(`${executor} 可选为协调者及读写执行者，权限传到运行器`, async (t) => {
+  const fx = await fixture(t, {}, []);
+  const canvas = {
+    nodes: ["coordinator", "research", "execute", "reviewer"].map((id) => ({ id, x: .5, y: .5 })),
+    edges: [], roleExecutors: { coordinator: executor, research: executor },
+  };
+  const approveAction = async () => true;
+  const runner = t.mock.fn(async ({ executor, access, approveAction: approval }) => {
+    assert.ok(["hermes", "openclaw"].includes(executor));
+    assert.equal(access, "read");
+    assert.equal(approval, approveAction);
+    return '{"action":"reply","text":"Hermes 已接收。"}';
+  });
+  assert.equal((await fx.run({ canvas, coordinatorRunner: runner, approveAction })).text, "Hermes 已接收。");
+  assert.equal((await fx.run({ canvas: { ...canvas, roleExecutors: { coordinator: executor, execute: executor } }, coordinatorRunner: runner, approveAction })).text, "Hermes 已接收。");
+  assert.equal(runner.mock.callCount(), 2);
+  assert.equal(fx.fetchMock.mock.callCount(), 0);
+});
+
+test("用户配置的角色指令和模型实际传入对应执行器", async(t) => {
+  const fx=await fixture(t,{});
+  const canvas={nodes:["coordinator","research","reviewer"].map(id=>({id,x:.5,y:.5})),edges:[],
+    roleExecutors:{coordinator:"hermes"},
+    roleSettings:{coordinator:{instructions:"优先核对合同编号",modelId:"chosen-model",memory:"persistent"}}};
+  const runner=t.mock.fn(async ({messages,config,settings,stateRoot,roleId})=>{
+    assert.match(messages[0].content,/优先核对合同编号/);
+    assert.equal(config.modelId,"chosen-model");
+    assert.equal(settings.memory,"persistent");
+    assert.equal(roleId,"coordinator");
+    assert.equal(stateRoot,fx.workspaceDir);
+    return '{"action":"reply","text":"已使用用户设置。"}';
+  });
+  const result=await fx.run({canvas,coordinatorRunner:runner,executorStateRoot:fx.workspaceDir});
+  assert.equal(result.text,"已使用用户设置。");
+  assert.equal(runner.mock.callCount(),1);
+});

@@ -99,6 +99,7 @@
   font-size: 9px;
   cursor: pointer;
 }
+.canvas-executor-button { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-skill-button:hover { border-color: var(--focus); }
 .canvas-skill-list { max-height: min(50vh, 390px); overflow-y: auto; display: grid; gap: 5px; }
 .canvas-skill-list label { display: flex; align-items: start; gap: 8px; border: 1px solid var(--line); border-radius: 7px; padding: 8px; cursor: pointer; }
@@ -134,7 +135,7 @@
 .canvas-grip:active { cursor: grabbing; }
 .canvas-grip:disabled { cursor: default; opacity: 1; }
 .canvas-node-footer { display: flex; align-items: center; gap: 3px; padding-left: 3px; }
-.canvas-node-footer span { margin-right: auto; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.canvas-node-footer span { margin-right: auto; font-size: 10px; color: var(--muted); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .canvas-node.running .canvas-node-footer span { color: var(--accent-ink); }
 .canvas-node.done .canvas-node-footer span { color: var(--success); }
 .canvas-node.failed .canvas-node-footer span { color: var(--error); }

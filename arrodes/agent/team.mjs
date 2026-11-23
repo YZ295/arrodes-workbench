@@ -1,5 +1,7 @@
 import { FILE_WRITING_TOOLS } from "./basic-tools.mjs";
+import { projectRules, projectWorkflow } from "./project-standards.mjs";
 import { validateClarification } from "./clarification.mjs";
+import { executorLabel, runExternalPrompt, runExternalTask } from "./external-executors.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { APP_CAPABILITY_BOUNDARIES, describeTurnTools, followUpCorrection, repeatsChoicePrompt, requestModel, runAgentTurn, safePath, verifyWorkspaceFile, READ_TOOL_NAMES, WORKSPACE_TOOL_NAMES } from "./loop.mjs";
@@ -22,11 +24,18 @@ export function getTeamRoles(customRoles = []) {
   return [...builtIn, ...customRoles.map((role) => ({ ...role, custom: true }))];
 }
 
-async function ask(config, stage, instructions, input, skillContext) {
-  const { message, error } = await requestModel(config, [
-    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillContext}\n${describeTurnTools([])}\n团队的调研和执行角色可以按关键词搜索网页或 GitHub 公开仓库，并读取网页核实。用户要查找资料时，可分配调研任务，requiredInputs 和 outputs 可为空，不要求用户先给链接。桌面启动可由读写执行角色申请用户确认。` },
+async function ask(config, stage, instructions, input, skillContext, run) {
+  const capabilities=run
+    ? "可用工具、Skill、MCP、记忆与原生规则由你当前的原生运行时提供。遵守该运行时已有规则和 Arrodes 角色权限，以实际可调用能力判断任务。"
+    : describeTurnTools([]);
+  const messages = [
+    { role: "system", content: `协作阶段：${stage}\n${instructions}${skillContext}\n${capabilities}\n团队的调研和执行角色可以按关键词搜索网页或 GitHub 公开仓库，并读取网页核实。用户要查找资料时，可分配调研任务，requiredInputs 和 outputs 可为空，不要求用户先给链接。桌面启动可由读写执行角色申请用户确认。` },
     { role: "user", content: input },
-  ]);
+  ];
+  if (run) return run({ stage, messages });
+  if (!config?.apiKey || config.apiKey === "(kept)") throw new Error("Arrodes 内置角色尚未连接模型，请配置模型或为该角色选择原生 Agent。");
+  messages[0].content += "\n\n" + projectRules;
+  const { message, error } = await requestModel(config, messages);
   if (error) throw new Error(error);
   if (typeof message.content !== "string" || !message.content.trim()) throw new Error("模型没有返回可用内容。");
   return message.content.trim();
@@ -146,7 +155,7 @@ function describeEvent(event, labels) {
   }
 }
 
-export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult, mcpForRole, clarifyFollowUp }) {
+export async function runTeamTurn({ text, history, workspaceDir, config, onProgress, onCanvasEvent, canvas, customRoles = [], skills = [], approveAction, openItem, launchDesktop, onToolResult, mcpForRole, clarifyFollowUp, externalRunner = runExternalTask, coordinatorRunner = runExternalPrompt, executorStateRoot }) {
   const catalog = getTeamRoles(customRoles);
   let graph;
   try {
@@ -154,6 +163,23 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
   } catch (error) {
     return { kind: "error", text: `无法读取团队配置：${error.message}` };
   }
+  const executorFor = (id) => graph?.roleExecutors?.[id] ?? catalog.find((role) => role.id === id)?.executor ?? "builtin";
+  const settingsFor = (id) => graph?.roleSettings?.[id] ?? {};
+  const configFor = (id) => settingsFor(id).modelId ? { ...config, modelId: settingsFor(id).modelId } : config;
+  const coordinatorExecutor = executorFor("coordinator");
+  const useExternalCoordinator = coordinatorExecutor !== "builtin";
+  const askRole = (id, stage, instructions, input, skillContext, evidence) => {
+    const executor = executorFor(id);
+    const run = executor === "builtin" ? undefined : (request) => {
+      onProgress?.(`${executorLabel(executor)} · ${catalog.find((role) => role.id === id)?.name}正在${stage}`);
+      return coordinatorRunner({ ...request, workspaceDir, executor, config: configFor(id), evidence,
+        settings: settingsFor(id), roleId: id, stateRoot: executorStateRoot,
+        access: catalog.find((role) => role.id === id)?.access ?? "read", approveAction, onProgress });
+    };
+    return ask(configFor(id), stage, instructions, input, skillContext, run);
+  };
+  const askCoordinator = (stage, instructions, input, skillContext) =>
+    askRole("coordinator", stage, instructions, input, skillContext);
   const skillById = new Map(skills.map((skill) => [skill.id, skill]));
   const overrides = new Map((graph?.nodes ?? []).map(({ id, skillIds }) => [id, skillIds]));
   const roleSkills = new Map(catalog.map(({ id, skillIds }) =>
@@ -168,13 +194,16 @@ export async function runTeamTurn({ text, history, workspaceDir, config, onProgr
   const skillContext = (roleId, taskText) => {
     const configured = skillsOf(roleId);
     const loaded = selectSkills(configured, taskText, { fallback: true });
-    return { loaded, instructions: skillInstructions(configured, loaded) };
+    return { loaded, instructions: skillInstructions(configured, loaded) + (settingsFor(roleId).instructions ? "\n用户配置的角色指令：\n" + settingsFor(roleId).instructions : "") };
   };
   const coordinatorSkills = skillContext("coordinator", text);
+  coordinatorSkills.instructions += "\n" + projectWorkflow(text);
   const selected = graph?.configured ? new Set(graph.nodes.map(({ id }) => id)) : null;
-  const workers = catalog.filter(({ id, access }) => Object.hasOwn(toolsByAccess, access) && (!selected || selected.has(id)));
+  const workers = catalog
+    .filter(({ id, access }) => Object.hasOwn(toolsByAccess, access) && (!selected || selected.has(id)))
+    .map((profile) => ({ ...profile, executor: executorFor(profile.id) }));
   const workerProfiles = new Map(workers.map((profile) => [profile.id, profile]));
-  const workerMcp = new Map(workers.map(({ id }) => [id, approveAction ? mcpForRole?.(id) ?? [] : []]));
+  const workerMcp = new Map(workers.map(({ id, executor }) => [id, approveAction && executor === "builtin" ? mcpForRole?.(id) ?? [] : []]));
   const roleList = catalog.map(({ name, description }) => `${name}：${description}`).join("\n");
 
   const canvasEvents = [];
@@ -204,9 +233,12 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
 }
 
   onProgress?.("协调者正在理解请求");
-  const requestPlan = async (correction) => readObject(await ask(config, "规划", [
+  const requestPlan = async (correction) => readObject(await askCoordinator("规划", [
       "你是谦卑之心的总协调者。先分辨用户是在询问信息、需要澄清，还是明确交办了任务。",
-      APP_CAPABILITY_BOUNDARIES,
+      useExternalCoordinator
+        ? "Arrodes 的角色、画布和应用内 Skill 配置由用户在界面管理；你自己的原生能力、规则、Skill、MCP 和记忆遵循原生机制及用户授权。"
+        : APP_CAPABILITY_BOUNDARIES,
+      "Codex、DSH、Hermes、OpenClaw 角色用各自的执行器，可按角色权限处理工作区任务。外部只读角色接收分配的 UTF-8 文本，外部执行器不能调取 Arrodes 内置工具或 MCP。",
       "只返回 JSON。‘你有什么 Agent’或‘查看当前可用的角色’返回 {\"action\":\"roles\"}，角色来自应用本身，与工作区文件无关。",
       "询问能否或如何创建、配置 Agent 角色，要求你代办，或根据对话历史确认是否必须用户亲自操作时，返回 {\"action\":\"role_help\"}。角色通过应用的可用角色面板保存，禁止将角色管理请求变成文件任务。",
       "草拟角色使用 reply：用户要你拟名称、职责或建议权限，包括接受上一轮的草拟邀请时，根据 history 的角色用途直接给出可复制的名称、职责、建议权限。不要返回 role_help 或 run。权限只能建议「只读」或「读写工作区」，桌面操控等当前没有的工具应明确指出。",
@@ -364,18 +396,27 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
         const readable = new Set(checks.filter(({ ok }) => ok).map(({ path }) => safePath(workspaceDir, path)));
         const reviewSkills = skillContext("reviewer", text);
         reportSkills("reviewer", task.taskId, reviewSkills.loaded);
-        const reviewResult = await runAgentTurn({
-          text: JSON.stringify({ goal: text, requirements: tasks.map(({ id, goal, acceptance }) => ({ id, goal, acceptance })), upstream, checks }),
-          history: [], workspaceDir, config, onProgress,
-          collaboration: {
-            stage: "验收",
-            instructions: "独立验收交付。checks 是程序实际打开文件的结果，核对内容时可用只读工具读取通过检查的文件。验收只根据目标、上游结果和实际证据。缺少必要证据或文件检查失败时拒绝。不要把用户未要求的文件当成硬性门槛。最终只返回 {\"passed\":true或false,\"reason\":\"验收结论\"}。" + reviewSkills.instructions,
-            tools: readable.size ? roles.reviewer.tools : [],
-            allowedFiles: readable,
-          },
-        });
-        if (reviewResult.kind !== "reply") throw new Error(reviewResult.text);
-        const verdict = readObject(reviewResult.text);
+        const reviewInput = JSON.stringify({ goal: text,
+          requirements: tasks.map(({ id, goal, acceptance }) => ({ id, goal, acceptance })), upstream, checks });
+        const reviewInstructions = '独立验收交付。checks 是程序实际打开文件的结果。验收只根据目标、上游结果和实际证据。缺必要证据或文件检查失败时拒绝。不要把用户未要求的文件当成硬性门槛。最终只返回 {"passed":true或false,"reason":"验收结论"}。';
+        let reviewText;
+        if (executorFor("reviewer") === "builtin") {
+          const result = await runAgentTurn({
+            text: reviewInput, history: [], workspaceDir, config: configFor("reviewer"), onProgress,
+            collaboration: {
+              stage: "验收",
+              instructions: reviewInstructions + "核对内容时可用只读工具读取通过检查的文件。" + reviewSkills.instructions,
+              tools: readable.size ? roles.reviewer.tools : [],
+              allowedFiles: readable,
+            },
+          });
+          if (result.kind !== "reply") throw new Error(result.text);
+          reviewText = result.text;
+        } else {
+          reviewText = await askRole("reviewer", "验收", reviewInstructions, reviewInput, reviewSkills.instructions,
+            checks.filter(({ ok }) => ok).map(({ path }) => path));
+        }
+        const verdict = readObject(reviewText);
         if (typeof verdict?.passed !== "boolean" || typeof verdict.reason !== "string") throw new Error("验收结果无法读取。");
         return {
           artifacts: [{ taskId: review, kind: "note", ref: review, summary: verdict.reason }],
@@ -386,6 +427,33 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
       const roleId = task.assistFor ? "coordinator" : original.role;
       const profile = task.assistFor ? roles.coordinator : workerProfiles.get(roleId);
       const stage = task.assistFor ? "协助" : profile.access === "write" ? "执行" : "调研";
+      if (task.assistFor && useExternalCoordinator) {
+        const request = requests.get(task.assistFor);
+        const result = await askCoordinator("协助", "你是协调者。根据任务和已提供的材料，为执行角色补充所需信息。按需指出缺失内容。", JSON.stringify({
+          assignment: original.goal, acceptance: original.acceptance, request, upstream,
+        }), coordinatorSkills.instructions);
+        return {
+          artifacts: [{ taskId: task.taskId, kind: "note", ref: task.taskId, summary: result }],
+          verification: { passed: true, checks: { completed: true } },
+        };
+      }
+      if (profile.executor && profile.executor !== "builtin") {
+        const taskSkills = skillContext(roleId, [original.title, task.deliverable, original.acceptance].join("\n"));
+        reportSkills(roleId, task.taskId, taskSkills.loaded);
+        const result = await externalRunner({
+          profile, config: configFor(roleId), workspaceDir, requiredInputs: original.requiredInputs, outputs: original.outputs,
+          assignment: task.deliverable, acceptance: original.acceptance, upstream,
+          instructions: taskSkills.instructions, onProgress, approveAction,
+          settings: settingsFor(roleId), roleId, stateRoot: executorStateRoot,
+        });
+        return {
+          artifacts: [
+            { taskId: task.taskId, kind: "note", ref: task.taskId, summary: result.text },
+            ...result.outputs.map((path) => ({ taskId: task.taskId, kind: "file", ref: path })),
+          ],
+          verification: { passed: true, checks: { completed: true } },
+        };
+      }
       const files = writes.get(task.taskId) ?? new Set();
       writes.set(task.taskId, files);
       const failedWrites = new Map();
@@ -406,7 +474,7 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
       reportSkills(roleId, task.taskId, taskSkills.loaded);
       const result = await runAgentTurn({
         text: JSON.stringify({ goal: text, assignment: task.deliverable, requiredInputs: original.requiredInputs, outputs: original.outputs, acceptance: original.acceptance, upstream, assist: requests.get(task.assistFor) }),
-        history: [], workspaceDir, config, onProgress, approveAction, openItem, launchDesktop, onToolResult,
+        history: [], workspaceDir, config: configFor(roleId), onProgress, approveAction, openItem, launchDesktop, onToolResult,
         collaboration: {
           stage, instructions: `角色：${profile.name}\n职责：${profile.description}\n只完成分给你的子任务，使用交接材料。表格优先用 read_table、summarize_table，写报告优先用 write_file；内置工具能完成时直接使用。并行调用彼此独立的只读工具，分页只读必要行。取得足够证据后直接汇报；缺必要信息时请求协助。${taskSkills.instructions}${xlsxInstructions}`,
           maxRounds: profile.access === "read" && !task.assistFor ? 12 : undefined,
@@ -555,10 +623,10 @@ function syncSubAgents(plan, workerProfiles, workerMcp, announce = {}) {
   }
   let summary;
   try {
-    summary = await ask(config, "汇总", "汇总真实交付。指出文件和实际验收范围。",
+    summary = await askCoordinator("汇总", "汇总真实交付。指出文件和实际验收范围。",
       JSON.stringify({ goal: text, tasks: outcome.records, checks: outcome.checks }), coordinatorSkills.instructions);
   } catch {
-    summary = "团队任务已完成，验收通过。";
+    summary = useExternalCoordinator ? "团队任务已通过验收。协调者未能返回汇总，可展开协作过程查看执行记录。" : "团队任务已完成，验收通过。";
   }
   return {
     kind: "reply", text: summary,
